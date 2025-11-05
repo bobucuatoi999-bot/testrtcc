@@ -90,6 +90,28 @@
             color: white;
         }
 
+        .btn-mute.muted {
+            background-color: #f44336;
+        }
+
+        .btn-camera {
+            background-color: #2196F3;
+            color: white;
+        }
+
+        .btn-camera.off {
+            background-color: #757575;
+        }
+
+        .btn-screen {
+            background-color: #9C27B0;
+            color: white;
+        }
+
+        .btn-screen.active {
+            background-color: #f44336;
+        }
+
         .btn-end {
             background-color: #f44336;
             color: white;
@@ -236,6 +258,12 @@
         <div class="button-group">
             <button id="muteBtn" class="btn-mute" onclick="toggleMute()" disabled>
                 Mute Audio
+            </button>
+            <button id="cameraBtn" class="btn-camera" onclick="toggleCamera()" disabled>
+                Turn Camera Off
+            </button>
+            <button id="screenShareBtn" class="btn-screen" onclick="toggleScreenShare()" disabled>
+                Share Screen
             </button>
             <button id="endCallBtn" class="btn-end" onclick="endCall()" disabled>
                 End Call
