@@ -75,13 +75,15 @@ function showStatus(message, type = 'info') {
 }
 
 function updateNameOverlays() {
-    if (userName && localStream) {
+    // Show local name if we have a name (even without stream)
+    if (userName) {
         localNameOverlay.textContent = userName;
         localNameOverlay.style.display = 'block';
     } else {
         localNameOverlay.style.display = 'none';
     }
 
+    // Show remote name if we have remote stream
     if (remoteUserName && remoteStream) {
         remoteNameOverlay.textContent = remoteUserName;
         remoteNameOverlay.style.display = 'block';
@@ -226,8 +228,8 @@ function initializeSocket() {
     // Existing users in room - we join after them
     socket.on('room-users', (data) => {
         console.log('👥 Existing users in room:', data.users);
-        if (data.users && data.users.length > 0 && localStream) {
-            // Connect to existing user
+        if (data.users && data.users.length > 0) {
+            // Connect to existing user (even without local stream - can still receive)
             remoteUserId = data.users[0];
             remoteUserName = userNames.get(remoteUserId) || 'User';
             updateNameOverlays();
@@ -244,7 +246,7 @@ function initializeSocket() {
         console.log('👋 New user joined:', data.userId);
         showStatus('New user joined the room', 'info');
         
-        if (localStream && !peerConnection) {
+        if (!peerConnection) {
             remoteUserId = data.userId;
             remoteUserName = userNames.get(data.userId) || 'User';
             updateNameOverlays();
@@ -311,17 +313,21 @@ function createPeerConnection() {
 
     peerConnection = new RTCPeerConnection(rtcConfig);
 
-    // Add local stream tracks
-    if (localStream) {
+    // Add local stream tracks (if available)
+    if (localStream && localStream.getTracks().length > 0) {
         localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);
+            console.log('✅ Added local track:', track.kind);
         });
+    } else {
+        console.log('⚠️ No local tracks to add (no camera/mic available)');
     }
 
     // Add screen share tracks if active
-    if (screenStream) {
+    if (screenStream && screenStream.getTracks().length > 0) {
         screenStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, screenStream);
+            console.log('✅ Added screen share track:', track.kind);
         });
     }
 
@@ -381,8 +387,18 @@ function createPeerConnection() {
 }
 
 async function establishConnection() {
-    if (isConnecting || !localStream || !remoteUserId || !socket || !socket.connected) {
+    if (isConnecting || !remoteUserId || !socket || !socket.connected) {
         return;
+    }
+    
+    // Allow connection even without local stream (user can still receive)
+    if (!localStream) {
+        // Create empty stream if needed
+        try {
+            localStream = new MediaStream();
+        } catch (e) {
+            console.warn('Could not create empty stream');
+        }
     }
 
     isConnecting = true;
@@ -541,29 +557,44 @@ async function startCall(withVideo) {
         console.log(`🚀 Starting ${withVideo ? 'video' : 'voice'} call in room: ${roomId}`);
         showStatus(`Starting ${withVideo ? 'video' : 'voice'} call...`, 'info');
 
+        // Try to get user media, but continue even if it fails
         try {
             localStream = await getUserMedia(withVideo, true);
             console.log('✅ Got local media stream');
             
-            localVideo.srcObject = localStream;
-            localVideo.muted = true;
+            if (localStream) {
+                localVideo.srcObject = localStream;
+                localVideo.muted = true;
+            }
             updateNameOverlays();
         } catch (mediaError) {
-            console.error('❌ Failed to get user media:', mediaError);
-            let errorMessage = 'Failed to access camera/microphone. ';
-            if (mediaError.name === 'NotAllowedError') {
-                errorMessage += 'Please allow camera and microphone access.';
-            } else if (mediaError.name === 'NotFoundError') {
-                errorMessage += 'No camera/microphone found.';
-            } else if (mediaError.name === 'NotReadableError') {
-                errorMessage += 'Camera/microphone is being used by another application.';
-            } else {
-                errorMessage += mediaError.message;
-            }
+            console.warn('⚠️ Could not access camera/microphone:', mediaError);
             
-            alert(errorMessage);
-            showStatus(errorMessage, 'error');
-            return;
+            // Create empty stream if no media available
+            try {
+                localStream = new MediaStream();
+                console.log('✅ Created empty media stream');
+                
+                // Show message that user can still connect without media
+                let warningMessage = 'No camera/microphone available. ';
+                if (mediaError.name === 'NotAllowedError') {
+                    warningMessage += 'You can still join and receive audio/video from others.';
+                } else if (mediaError.name === 'NotFoundError') {
+                    warningMessage += 'You can still join and receive audio/video from others.';
+                } else if (mediaError.name === 'NotReadableError') {
+                    warningMessage += 'You can still join and receive audio/video from others.';
+                } else {
+                    warningMessage += 'You can still join and receive audio/video from others.';
+                }
+                
+                showStatus(warningMessage, 'info');
+                
+                // Update UI to show user can still participate
+                localVideo.style.display = 'none'; // Hide local video if no stream
+            } catch (streamError) {
+                console.error('❌ Failed to create empty stream:', streamError);
+                // Continue anyway - user can still join room
+            }
         }
 
         if (!socket || !socket.connected) {
@@ -590,9 +621,18 @@ async function startCall(withVideo) {
 }
 
 function toggleMute() {
-    if (!localStream) return;
+    if (!localStream) {
+        showStatus('No microphone available', 'info');
+        return;
+    }
 
-    localStream.getAudioTracks().forEach(track => {
+    const audioTracks = localStream.getAudioTracks();
+    if (audioTracks.length === 0) {
+        showStatus('No microphone available', 'info');
+        return;
+    }
+
+    audioTracks.forEach(track => {
         track.enabled = !track.enabled;
     });
 
@@ -605,11 +645,38 @@ function toggleMute() {
 }
 
 async function toggleCamera() {
-    if (!localStream) return;
+    if (!localStream) {
+        showStatus('No camera available', 'info');
+        return;
+    }
 
     try {
         const videoTrack = localStream.getVideoTracks()[0];
-        if (!videoTrack) return;
+        if (!videoTrack) {
+            // Try to get camera if no track exists
+            try {
+                const newStream = await getUserMedia(true, false);
+                const newVideoTrack = newStream.getVideoTracks()[0];
+                if (newVideoTrack) {
+                    localStream.addTrack(newVideoTrack);
+                    localVideo.srcObject = localStream;
+                    localVideo.style.display = 'block';
+                    updateNameOverlays();
+                    
+                    if (peerConnection) {
+                        peerConnection.addTrack(newVideoTrack, localStream);
+                    }
+                    
+                    isCameraOff = false;
+                    cameraBtn.textContent = 'Turn Camera Off';
+                    cameraBtn.className = 'btn-camera';
+                    showStatus('Camera turned on', 'success');
+                }
+            } catch (error) {
+                showStatus('No camera available', 'info');
+            }
+            return;
+        }
 
         if (isCameraOff) {
             // Turn camera on
