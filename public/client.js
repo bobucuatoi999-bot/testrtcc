@@ -24,6 +24,7 @@ let maxReconnectAttempts = 5;   // Maximum reconnection attempts
 let reconnectTimeout = null;     // Reconnection timeout
 let connectionAttempts = 0;     // Connection attempt counter
 let isConnecting = false;       // Connection in progress flag
+let iceCandidateQueue = [];     // Queue for ICE candidates received before remote description
 
 // Store user names by socket ID
 const userNames = new Map();     // { socketId: userName }
@@ -112,6 +113,9 @@ function cleanupConnection() {
     if (remoteVideo.srcObject) {
         remoteVideo.srcObject = null;
     }
+
+    // Clear ICE candidate queue
+    iceCandidateQueue = [];
 
     remoteStream = null;
     remoteUserId = null;
@@ -287,12 +291,28 @@ function initializeSocket() {
     });
 
     socket.on('ice-candidate', async (data) => {
-        if (peerConnection && data.candidate) {
+        if (!peerConnection || !data.candidate) {
+            return;
+        }
+
+        const candidate = new RTCIceCandidate(data.candidate);
+        
+        // Check if remote description is set
+        if (peerConnection.remoteDescription) {
+            // Remote description is set, add candidate immediately
             try {
-                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                await peerConnection.addIceCandidate(candidate);
+                console.log('✅ Added ICE candidate');
             } catch (error) {
-                console.error('❌ Error adding ICE candidate:', error);
+                // If it fails, might be duplicate or invalid - that's okay
+                if (error.message && !error.message.includes('InvalidStateError')) {
+                    console.error('❌ Error adding ICE candidate:', error);
+                }
             }
+        } else {
+            // Remote description not set yet, queue the candidate
+            console.log('📦 Queuing ICE candidate (waiting for remote description)');
+            iceCandidateQueue.push(candidate);
         }
     });
 
@@ -409,6 +429,9 @@ async function establishConnection() {
             createPeerConnection();
         }
 
+        // Clear any queued candidates from previous connection
+        iceCandidateQueue = [];
+
         // Create offer - whoever initiates becomes the caller
         const offer = await peerConnection.createOffer({
             offerToReceiveAudio: true,
@@ -416,6 +439,7 @@ async function establishConnection() {
         });
 
         await peerConnection.setLocalDescription(offer);
+        console.log('✅ Local description set (offer)');
 
         socket.emit('offer', {
             offer: offer,
@@ -464,10 +488,20 @@ async function handleOffer(offer, senderId) {
             createPeerConnection();
         }
 
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        // Clear any queued candidates from previous connection
+        iceCandidateQueue = [];
 
+        // Set remote description first
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        console.log('✅ Remote description set');
+
+        // Process any queued ICE candidates
+        await processQueuedIceCandidates();
+
+        // Create and send answer
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
+        console.log('✅ Local description set');
 
         if (socket && socket.connected) {
             socket.emit('answer', {
@@ -489,12 +523,45 @@ async function handleOffer(offer, senderId) {
 async function handleAnswer(answer) {
     try {
         if (peerConnection && peerConnection.signalingState === 'have-local-offer') {
+            // Clear any queued candidates from previous connection
+            iceCandidateQueue = [];
+            
+            // Set remote description first
             await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            console.log('✅ Remote description set from answer');
+
+            // Process any queued ICE candidates
+            await processQueuedIceCandidates();
+            
             console.log('✅ Answer handled, connection established');
         }
     } catch (error) {
         console.error('❌ Error handling answer:', error);
         showStatus('Failed to establish connection', 'error');
+    }
+}
+
+/**
+ * Process queued ICE candidates that arrived before remote description was set
+ */
+async function processQueuedIceCandidates() {
+    if (iceCandidateQueue.length === 0) {
+        return;
+    }
+
+    console.log(`📦 Processing ${iceCandidateQueue.length} queued ICE candidates`);
+    
+    while (iceCandidateQueue.length > 0) {
+        const candidate = iceCandidateQueue.shift();
+        try {
+            await peerConnection.addIceCandidate(candidate);
+            console.log('✅ Added queued ICE candidate');
+        } catch (error) {
+            // Ignore errors for queued candidates (might be duplicates or invalid)
+            if (error.message && !error.message.includes('InvalidStateError')) {
+                console.warn('⚠️ Could not add queued ICE candidate:', error.message);
+            }
+        }
     }
 }
 
