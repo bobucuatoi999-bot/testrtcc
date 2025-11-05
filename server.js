@@ -1,9 +1,9 @@
 // ============================================
 // WebRTC Signaling Server
 // Handles real-time communication for video/voice calls
+// Uses Express and Socket.io for signaling
 // ============================================
 
-// Import required modules
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -15,15 +15,15 @@ const app = express();
 // Create HTTP server (Socket.io needs this)
 const server = http.createServer(app);
 
-// Configure Socket.io with CORS enabled for testing
+// Configure Socket.io with CORS enabled for global access
 const io = socketIo(server, {
   cors: {
-    origin: '*', // Allow all origins for testing
+    origin: '*', // Allow all origins for global access
     methods: ['GET', 'POST']
   }
 });
 
-// Serve static files from 'public' folder (for frontend)
+// Serve static files from 'public' folder (frontend)
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Store active rooms and their users
@@ -33,6 +33,10 @@ const rooms = new Map();
 // Store user names mapped to socket IDs
 // Format: { socketId: userName }
 const userNames = new Map();
+
+// Store PeerJS IDs mapped to socket IDs
+// Format: { socketId: peerId }
+const peerIds = new Map();
 
 // ============================================
 // Socket.io Connection Handling
@@ -44,12 +48,20 @@ io.on('connection', (socket) => {
   // ============================================
   // Handle User Joining a Room
   // ============================================
-  socket.on('join-room', (roomId) => {
+  socket.on('join-room', (data) => {
     try {
+      const { roomId, userName } = data || {};
+      
       // Validate roomId
       if (!roomId || typeof roomId !== 'string') {
         socket.emit('error', { message: 'Invalid room ID' });
         return;
+      }
+
+      // Store user name
+      if (userName) {
+        userNames.set(socket.id, userName);
+        console.log(`👤 User ${socket.id} set name: ${userName}`);
       }
 
       // Leave any existing rooms
@@ -57,7 +69,6 @@ io.on('connection', (socket) => {
         Array.from(socket.rooms).forEach(room => {
           if (room !== socket.id) {
             socket.leave(room);
-            // Remove user from room tracking
             if (rooms.has(room)) {
               rooms.get(room).delete(socket.id);
               if (rooms.get(room).size === 0) {
@@ -80,16 +91,9 @@ io.on('connection', (socket) => {
       console.log(`📥 User ${socket.id} joined room: ${roomId}`);
       
       // Notify the user they've successfully joined
-      socket.emit('room-joined', { roomId });
-
-      // Handle user name registration
-      socket.on('user-name', (data) => {
-        if (data.name && data.roomId === roomId) {
-          userNames.set(socket.id, data.name);
-          console.log(`👤 User ${socket.id} set name: ${data.name}`);
-          // Broadcast name to other users in room
-          socket.to(roomId).emit('user-name-updated', { userId: socket.id, name: data.name });
-        }
+      socket.emit('room-joined', { 
+        roomId,
+        socketId: socket.id 
       });
 
       // Get all users in the room (excluding the current user)
@@ -97,12 +101,27 @@ io.on('connection', (socket) => {
       
       // Notify about existing users in the room
       if (roomUsers.length > 0) {
-        socket.emit('room-users', { users: roomUsers });
+        const usersWithNames = roomUsers.map(id => ({
+          socketId: id,
+          userName: userNames.get(id) || 'User'
+        }));
+        socket.emit('room-users', { users: usersWithNames });
         console.log(`👥 Room ${roomId} has ${roomUsers.length} other user(s)`);
       }
 
       // Notify other users in the room about the new user
-      socket.to(roomId).emit('user-joined', { userId: socket.id });
+      socket.to(roomId).emit('user-joined', { 
+        userId: socket.id,
+        userName: userName || 'User'
+      });
+
+      // Send my PeerJS ID if I have one
+      if (peerIds.has(socket.id)) {
+        socket.to(roomId).emit('peer-id', {
+          peerId: peerIds.get(socket.id),
+          socketId: socket.id
+        });
+      }
       
     } catch (error) {
       console.error(`❌ Error joining room: ${error.message}`);
@@ -111,100 +130,43 @@ io.on('connection', (socket) => {
   });
 
   // ============================================
-  // Handle WebRTC Offer (call initiation)
+  // Handle PeerJS ID Exchange
   // ============================================
-  socket.on('offer', (data) => {
+  socket.on('peer-id', (data) => {
     try {
-      const { offer, targetUserId, roomId } = data;
+      const { roomId, peerId } = data || {};
 
-      if (!offer || !targetUserId || !roomId) {
-        socket.emit('error', { message: 'Missing required offer data' });
-        return;
+      if (roomId && peerId) {
+        // Store PeerJS ID
+        peerIds.set(socket.id, peerId);
+        console.log(`🔑 User ${socket.id} PeerJS ID: ${peerId}`);
+
+        // Send to other users in the room
+        socket.to(roomId).emit('peer-id', {
+          peerId: peerId,
+          socketId: socket.id
+        });
       }
-
-      console.log(`📤 Offer from ${socket.id} to ${targetUserId} in room ${roomId}`);
-
-      // Relay offer to the target user
-      socket.to(targetUserId).emit('offer', {
-        offer: offer,
-        senderId: socket.id,
-        roomId: roomId
-      });
-
     } catch (error) {
-      console.error(`❌ Error handling offer: ${error.message}`);
-      socket.emit('error', { message: 'Failed to send offer', error: error.message });
+      console.error(`❌ Error handling peer-id: ${error.message}`);
     }
   });
 
   // ============================================
-  // Handle WebRTC Answer (call response)
+  // Handle PeerJS Signaling (for WebRTC connection)
   // ============================================
-  socket.on('answer', (data) => {
-    try {
-      const { answer, targetUserId, roomId } = data;
-
-      if (!answer || !targetUserId || !roomId) {
-        socket.emit('error', { message: 'Missing required answer data' });
-        return;
-      }
-
-      console.log(`📥 Answer from ${socket.id} to ${targetUserId} in room ${roomId}`);
-
-      // Relay answer to the target user
-      socket.to(targetUserId).emit('answer', {
-        answer: answer,
-        senderId: socket.id,
-        roomId: roomId
-      });
-
-    } catch (error) {
-      console.error(`❌ Error handling answer: ${error.message}`);
-      socket.emit('error', { message: 'Failed to send answer', error: error.message });
-    }
-  });
-
-  // ============================================
-  // Handle ICE Candidates (network connectivity)
-  // ============================================
-  socket.on('ice-candidate', (data) => {
-    try {
-      const { candidate, targetUserId, roomId } = data;
-
-      if (!candidate || !targetUserId || !roomId) {
-        socket.emit('error', { message: 'Missing required ICE candidate data' });
-        return;
-      }
-
-      // Relay ICE candidate to the target user
-      socket.to(targetUserId).emit('ice-candidate', {
-        candidate: candidate,
-        senderId: socket.id,
-        roomId: roomId
-      });
-
-    } catch (error) {
-      console.error(`❌ Error handling ICE candidate: ${error.message}`);
-      socket.emit('error', { message: 'Failed to send ICE candidate', error: error.message });
-    }
-  });
-
-  // ============================================
-  // Handle PeerJS Events (if using PeerJS library)
-  // ============================================
-  // PeerJS typically handles signaling differently, but we can support it
   socket.on('peerjs-signal', (data) => {
     try {
       const { signal, targetUserId, roomId } = data;
 
       if (!signal || !targetUserId || !roomId) {
-        socket.emit('error', { message: 'Missing required PeerJS signal data' });
+        socket.emit('error', { message: 'Missing required signal data' });
         return;
       }
 
-      console.log(`🔗 PeerJS signal from ${socket.id} to ${targetUserId}`);
+      console.log(`🔗 PeerJS signal from ${socket.id} to ${targetUserId} in room ${roomId}`);
 
-      // Relay PeerJS signal to the target user
+      // Relay signal to the target user
       socket.to(targetUserId).emit('peerjs-signal', {
         signal: signal,
         senderId: socket.id,
@@ -213,35 +175,49 @@ io.on('connection', (socket) => {
 
     } catch (error) {
       console.error(`❌ Error handling PeerJS signal: ${error.message}`);
-      socket.emit('error', { message: 'Failed to send PeerJS signal', error: error.message });
+      socket.emit('error', { message: 'Failed to send signal', error: error.message });
     }
   });
 
   // ============================================
-  // Handle User Leaving Room (user quits, room stays active)
+  // Handle Call End
+  // ============================================
+  socket.on('end-call', (data) => {
+    try {
+      const { roomId } = data || {};
+
+      if (roomId) {
+        // Notify all users in the room
+        socket.to(roomId).emit('call-ended', { 
+          userId: socket.id,
+          roomId: roomId 
+        });
+        console.log(`📴 User ${socket.id} ended call in room ${roomId}`);
+      }
+
+    } catch (error) {
+      console.error(`❌ Error handling end-call: ${error.message}`);
+      socket.emit('error', { message: 'Failed to end call', error: error.message });
+    }
+  });
+
+  // ============================================
+  // Handle User Leaving Room (without ending call)
   // ============================================
   socket.on('leave-room', (data) => {
     try {
       const { roomId } = data || {};
 
       if (roomId) {
-        // Leave the room
         socket.leave(roomId);
-        
-        // Remove user from room tracking
         if (rooms.has(roomId)) {
           rooms.get(roomId).delete(socket.id);
-          
-          // Notify other users in the room that this user left
           socket.to(roomId).emit('user-left', { userId: socket.id });
-          
-          // Clean up empty rooms
           if (rooms.get(roomId).size === 0) {
             rooms.delete(roomId);
             console.log(`🗑️  Room ${roomId} cleaned up (empty)`);
           }
         }
-
         console.log(`👋 User ${socket.id} left room: ${roomId}`);
       }
 
@@ -252,39 +228,14 @@ io.on('connection', (socket) => {
   });
 
   // ============================================
-  // Handle Call End (kept for backward compatibility)
-  // ============================================
-  socket.on('end-call', (data) => {
-    try {
-      const { roomId, targetUserId } = data || {};
-
-      if (targetUserId) {
-        // Notify specific user about call end
-        socket.to(targetUserId).emit('call-ended', { 
-          userId: socket.id,
-          roomId: roomId 
-        });
-      } else if (roomId) {
-        // Notify all users in the room
-        socket.to(roomId).emit('call-ended', { 
-          userId: socket.id,
-          roomId: roomId 
-        });
-      }
-
-      console.log(`📴 User ${socket.id} ended call in room ${roomId || 'unknown'}`);
-
-    } catch (error) {
-      console.error(`❌ Error handling end-call: ${error.message}`);
-      socket.emit('error', { message: 'Failed to end call', error: error.message });
-    }
-  });
-
-  // ============================================
   // Handle User Disconnection
   // ============================================
   socket.on('disconnect', (reason) => {
     console.log(`👋 User disconnected: ${socket.id} (reason: ${reason})`);
+
+    // Remove user name and PeerJS ID
+    userNames.delete(socket.id);
+    peerIds.delete(socket.id);
 
     // Remove user from all rooms
     rooms.forEach((users, roomId) => {
@@ -326,13 +277,14 @@ app.get('/health', (req, res) => {
 // ============================================
 // Start Server
 // ============================================
-// Get port from environment variable or default to 3000
+// Get port from environment variable (Railway uses PORT)
+// Default to 3000 for local development
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
   console.log('🚀 WebRTC Signaling Server is running!');
   console.log(`📡 Server listening on port ${PORT}`);
-  console.log(`🌐 CORS enabled for all origins (testing mode)`);
+  console.log(`🌐 CORS enabled for all origins (global access)`);
   console.log(`📁 Serving static files from: ${path.join(__dirname, 'public')}`);
 });
 
@@ -354,4 +306,3 @@ process.on('SIGINT', () => {
     process.exit(0);
   });
 });
-

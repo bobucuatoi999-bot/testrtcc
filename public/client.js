@@ -1,50 +1,59 @@
 // ============================================
 // WebRTC Client - Video and Voice Call Logic
-// Uses native WebRTC API with Socket.io signaling
+// Uses PeerJS for peer connections with Socket.io signaling
 // ============================================
 
 // ============================================
 // Global Variables
 // ============================================
 let socket = null;              // Socket.io connection
-let peerConnection = null;      // RTCPeerConnection instance
+let peer = null;                // PeerJS peer instance
 let localStream = null;         // Local media stream (camera/mic)
 let screenStream = null;        // Screen share stream
 let remoteStream = null;        // Remote media stream
+let currentCall = null;         // Active PeerJS call
 let isMuted = false;            // Mute state
 let isCameraOff = false;        // Camera off state
-let isSharingScreen = false;    // Screen sharing state
+let isSharingScreen = false;   // Screen sharing state
 let currentRoomId = null;       // Currently joined room ID
 let userName = null;            // User's name
-let remoteUserId = null;        // Currently connected user's socket ID
+let myPeerId = null;             // My PeerJS ID
+let remotePeerId = null;        // Remote user's PeerJS ID
 let remoteUserName = null;      // Remote user's name
-let isCaller = false;           // Whether this user initiated the call
-let reconnectAttempts = 0;      // Reconnection attempt counter
-let maxReconnectAttempts = 5;   // Maximum reconnection attempts
-let reconnectTimeout = null;     // Reconnection timeout
-let connectionAttempts = 0;     // Connection attempt counter
-let isConnecting = false;       // Connection in progress flag
-let iceCandidateQueue = [];     // Queue for ICE candidates received before remote description
-
-// Store user names by socket ID
-const userNames = new Map();     // { socketId: userName }
+let iceCandidateQueue = [];     // Queue for ICE candidates received before connection
 
 // ============================================
 // Server Configuration
 // ============================================
+// Get server URL from config.js (set for Railway deployment)
 const SERVER_URL = window.SERVER_URL || 'http://localhost:3000';
 
-// WebRTC Configuration with STUN servers
+// WebRTC Configuration with FREE STUN and TURN servers
+// Google STUN servers (free) + OpenRelay TURN server (free)
 const rtcConfig = {
     iceServers: [
+        // Free Google STUN servers
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        // Free TURN server (OpenRelay - no auth required)
+        { 
+            urls: [
+                'turn:openrelay.metered.ca:80',
+                'turn:openrelay.metered.ca:443',
+                'turn:openrelay.metered.ca:443?transport=tcp'
+            ],
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        }
     ],
     iceCandidatePoolSize: 10
 };
 
-// Get DOM elements
+// ============================================
+// DOM Elements
+// ============================================
 const localVideo = document.getElementById('localVideo');
 const remoteVideo = document.getElementById('remoteVideo');
 const nameInput = document.getElementById('nameInput');
@@ -56,18 +65,22 @@ const cameraBtn = document.getElementById('cameraBtn');
 const screenShareBtn = document.getElementById('screenShareBtn');
 const endCallBtn = document.getElementById('endCallBtn');
 const statusDiv = document.getElementById('status');
-const localNameOverlay = document.getElementById('localNameOverlay');
-const remoteNameOverlay = document.getElementById('remoteNameOverlay');
 
 // ============================================
 // Utility Functions
 // ============================================
 
+/**
+ * Display status message to user
+ * @param {string} message - Message to display
+ * @param {string} type - Type: 'info', 'success', or 'error'
+ */
 function showStatus(message, type = 'info') {
     statusDiv.textContent = message;
     statusDiv.className = `status ${type}`;
     statusDiv.style.display = 'block';
     
+    // Auto-hide info messages after 5 seconds
     if (type === 'info') {
         setTimeout(() => {
             statusDiv.style.display = 'none';
@@ -75,24 +88,10 @@ function showStatus(message, type = 'info') {
     }
 }
 
-function updateNameOverlays() {
-    // Show local name if we have a name (even without stream)
-    if (userName) {
-        localNameOverlay.textContent = userName;
-        localNameOverlay.style.display = 'block';
-    } else {
-        localNameOverlay.style.display = 'none';
-    }
-
-    // Show remote name if we have remote stream
-    if (remoteUserName && remoteStream) {
-        remoteNameOverlay.textContent = remoteUserName;
-        remoteNameOverlay.style.display = 'block';
-    } else {
-        remoteNameOverlay.style.display = 'none';
-    }
-}
-
+/**
+ * Enable or disable UI buttons based on call state
+ * @param {boolean} inCall - Whether user is currently in a call
+ */
 function updateUI(inCall) {
     startVideoBtn.disabled = inCall;
     startVoiceBtn.disabled = inCall;
@@ -104,827 +103,720 @@ function updateUI(inCall) {
     roomIdInput.disabled = inCall;
 }
 
-function cleanupConnection() {
-    if (peerConnection) {
-        peerConnection.close();
-        peerConnection = null;
+/**
+ * Clean up all media streams and connections
+ */
+function cleanup() {
+    // Stop local stream tracks
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            track.stop();
+            track.enabled = false;
+        });
+        localStream = null;
     }
 
+    // Stop screen share stream
+    if (screenStream) {
+        screenStream.getTracks().forEach(track => {
+            track.stop();
+            track.enabled = false;
+        });
+        screenStream = null;
+    }
+
+    // Close current call
+    if (currentCall) {
+        currentCall.close();
+        currentCall = null;
+    }
+
+    // Destroy peer connection
+    if (peer) {
+        peer.destroy();
+        peer = null;
+    }
+
+    // Clear video elements
+    if (localVideo.srcObject) {
+        localVideo.srcObject = null;
+    }
     if (remoteVideo.srcObject) {
         remoteVideo.srcObject = null;
     }
 
-    // Clear ICE candidate queue
-    iceCandidateQueue = [];
-
+    // Reset state
     remoteStream = null;
-    remoteUserId = null;
+    remotePeerId = null;
     remoteUserName = null;
-    isCaller = false;
-    isConnecting = false;
-    connectionAttempts = 0;
-    
-    updateNameOverlays();
-}
-
-function cleanup() {
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-        localStream = null;
-    }
-
-    if (screenStream) {
-        screenStream.getTracks().forEach(track => track.stop());
-        screenStream = null;
-    }
-
-    cleanupConnection();
-
-    if (localVideo.srcObject) {
-        localVideo.srcObject = null;
-    }
-
-    if (socket && socket.connected && currentRoomId) {
-        socket.emit('leave-room', { roomId: currentRoomId });
-    }
-
+    myPeerId = null;
     currentRoomId = null;
     isMuted = false;
     isCameraOff = false;
     isSharingScreen = false;
-    reconnectAttempts = 0;
-    
-    localNameOverlay.style.display = 'none';
-    remoteNameOverlay.style.display = 'none';
-    
+    iceCandidateQueue = [];
+
+    // Leave room on server
+    if (socket && socket.connected && currentRoomId) {
+        socket.emit('leave-room', { roomId: currentRoomId });
+    }
+
     updateUI(false);
-    showStatus('Left room. Ready for new call.', 'info');
+    showStatus('Call ended. Ready for new call.', 'info');
 }
 
 // ============================================
 // Socket.io Connection Setup
 // ============================================
 
+/**
+ * Initialize Socket.io connection to signaling server
+ */
 function initializeSocket() {
-    console.log('🔌 Connecting to server:', SERVER_URL);
-    socket = io(SERVER_URL, {
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionAttempts: 10
-    });
+    try {
+        socket = io(SERVER_URL, {
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionAttempts: 5
+        });
 
-    socket.on('connect', () => {
-        console.log('✅ Connected to signaling server:', socket.id);
-        showStatus('Connected to server', 'success');
-        reconnectAttempts = 0;
-        
-        // Rejoin room if we were in one
-        if (currentRoomId && localStream) {
-            socket.emit('join-room', currentRoomId);
-        }
-    });
+        socket.on('connect', () => {
+            console.log('✅ Connected to signaling server');
+            showStatus('Connected to server', 'success');
+        });
 
-    socket.on('connect_error', (error) => {
-        console.error('❌ Connection error:', error);
-        showStatus('Failed to connect to server. Retrying...', 'error');
-    });
+        socket.on('disconnect', () => {
+            console.log('❌ Disconnected from signaling server');
+            showStatus('Disconnected from server. Reconnecting...', 'error');
+        });
 
-    socket.on('disconnect', (reason) => {
-        console.log('⚠️ Disconnected from server:', reason);
-        if (reason === 'io server disconnect') {
-            socket.connect();
-        } else if (currentRoomId) {
-            showStatus('Connection lost. Attempting to reconnect...', 'error');
-            setTimeout(() => {
-                if (currentRoomId && localStream) {
-                    socket.emit('join-room', currentRoomId);
-                }
-            }, 1000);
-        }
-    });
+        socket.on('connect_error', (error) => {
+            console.error('❌ Connection error:', error);
+            showStatus('Connection failed. Please check your internet and refresh.', 'error');
+        });
 
-    socket.on('room-joined', (data) => {
-        console.log('✅ Joined room:', data.roomId);
-        currentRoomId = data.roomId;
-        if (userName) {
-            socket.emit('user-name', { name: userName, roomId: data.roomId });
-            userNames.set(socket.id, userName);
-        }
-        showStatus(`${userName || 'You'} joined room: ${data.roomId}`, 'success');
-        updateNameOverlays();
-        
-        // Wait a moment for other users to be ready
-        setTimeout(() => {
-            establishConnection();
-        }, 500);
-    });
+        // Handle room joined event
+        socket.on('room-joined', (data) => {
+            console.log('✅ Joined room:', data.roomId);
+            currentRoomId = data.roomId;
+        });
 
-    socket.on('user-name-updated', (data) => {
-        console.log('👤 User name updated:', data.userId, data.name);
-        userNames.set(data.userId, data.name);
-        if (data.userId === remoteUserId) {
-            remoteUserName = data.name;
-            updateNameOverlays();
-        }
-    });
-
-    // Existing users in room - we join after them
-    socket.on('room-users', (data) => {
-        console.log('👥 Existing users in room:', data.users);
-        if (data.users && data.users.length > 0) {
-            // Connect to existing user (even without local stream - can still receive)
-            remoteUserId = data.users[0];
-            remoteUserName = userNames.get(remoteUserId) || 'User';
-            updateNameOverlays();
-            
-            // Wait a bit then create offer
-            setTimeout(() => {
-                establishConnection();
-            }, 500);
-        }
-    });
-
-    // New user joined - we were here first
-    socket.on('user-joined', (data) => {
-        console.log('👋 New user joined:', data.userId);
-        showStatus('New user joined the room', 'info');
-        
-        if (!peerConnection) {
-            remoteUserId = data.userId;
-            remoteUserName = userNames.get(data.userId) || 'User';
-            updateNameOverlays();
-            
-            // Wait a bit for them to be ready, then create offer
-            setTimeout(() => {
-                establishConnection();
-            }, 500);
-        }
-    });
-
-    socket.on('user-left', (data) => {
-        console.log('👋 User left:', data.userId);
-        if (data.userId === remoteUserId) {
-            showStatus('Other user left. Waiting for new user...', 'info');
-            cleanupConnection();
-        }
-    });
-
-    socket.on('offer', async (data) => {
-        console.log('📥 Received offer from:', data.senderId);
-        if (isConnecting) {
-            console.log('⚠️ Already connecting, ignoring duplicate offer');
-            return;
-        }
-        
-        remoteUserId = data.senderId;
-        remoteUserName = userNames.get(data.senderId) || 'User';
-        updateNameOverlays();
-        await handleOffer(data.offer, data.senderId);
-    });
-
-    socket.on('answer', async (data) => {
-        console.log('📥 Received answer from:', data.senderId);
-        if (peerConnection && peerConnection.signalingState !== 'stable') {
-            await handleAnswer(data.answer);
-        }
-    });
-
-    socket.on('ice-candidate', async (data) => {
-        if (!peerConnection || !data.candidate) {
-            return;
-        }
-
-        const candidate = new RTCIceCandidate(data.candidate);
-        
-        // Check if remote description is set
-        if (peerConnection.remoteDescription) {
-            // Remote description is set, add candidate immediately
-            try {
-                await peerConnection.addIceCandidate(candidate);
-                console.log('✅ Added ICE candidate');
-            } catch (error) {
-                // If it fails, might be duplicate or invalid - that's okay
-                if (error.message && !error.message.includes('InvalidStateError')) {
-                    console.error('❌ Error adding ICE candidate:', error);
-                }
+        // Handle existing users in room
+        socket.on('room-users', (data) => {
+            console.log('👥 Users in room:', data.users);
+            if (data.users.length > 0) {
+                // Another user is already in the room - wait for their PeerJS ID
+                const otherUser = data.users[0];
+                remoteUserName = otherUser.userName;
+                // They will send their peer-id via socket
             }
+        });
+
+        // Handle new user joining
+        socket.on('user-joined', (data) => {
+            console.log('👤 New user joined:', data.userId);
+            remoteUserName = data.userName || 'User';
+            // Wait for them to send their PeerJS ID
+        });
+
+        // Handle PeerJS ID exchange
+        socket.on('peer-id', (data) => {
+            console.log('🔑 Received PeerJS ID:', data.peerId);
+            if (data.peerId && myPeerId) {
+                remotePeerId = data.peerId;
+                // Wait a bit for both peers to be ready, then connect
+                setTimeout(() => {
+                    connectToUser(data.peerId);
+                }, 500);
+            }
+        });
+
+        // Handle user leaving
+        socket.on('user-left', (data) => {
+            console.log('👋 User left:', data.userId);
+            if (remotePeerId) {
+                showStatus('Other user left. Waiting for new user...', 'info');
+                cleanup();
+            }
+        });
+
+
+        // Handle call ended
+        socket.on('call-ended', (data) => {
+            console.log('📴 Call ended by other user');
+            showStatus('Other user ended the call', 'info');
+            cleanup();
+        });
+
+        // Handle errors
+        socket.on('error', (error) => {
+            console.error('❌ Server error:', error);
+            showStatus(error.message || 'Server error occurred', 'error');
+        });
+
+    } catch (error) {
+        console.error('❌ Error initializing socket:', error);
+        showStatus('Failed to connect to server. Please refresh the page.', 'error');
+    }
+}
+
+// ============================================
+// PeerJS Initialization
+// ============================================
+
+/**
+ * Initialize PeerJS peer connection
+ */
+function initializePeer() {
+    try {
+        // Create PeerJS instance with custom ICE servers
+        peer = new Peer({
+            config: rtcConfig,
+            debug: 2 // Enable debug logging
+        });
+
+        peer.on('open', (id) => {
+            console.log('✅ PeerJS connected. My ID:', id);
+            myPeerId = id;
+            showStatus('Ready to connect', 'success');
+            
+            // Send my PeerJS ID to server so others can connect
+            if (socket && socket.connected && currentRoomId) {
+                socket.emit('peer-id', {
+                    roomId: currentRoomId,
+                    peerId: id
+                });
+            }
+        });
+
+        peer.on('error', (error) => {
+            console.error('❌ PeerJS error:', error);
+            
+            // Handle specific errors
+            if (error.type === 'peer-unavailable') {
+                showStatus('Peer unavailable. Waiting for user to join...', 'info');
+            } else if (error.type === 'network') {
+                showStatus('Network error. Trying to reconnect...', 'error');
+                // Attempt to reconnect
+                setTimeout(() => {
+                    if (!peer || peer.destroyed) {
+                        initializePeer();
+                    }
+                }, 2000);
+            } else {
+                showStatus('Connection error: ' + error.message, 'error');
+            }
+        });
+
+        // Handle incoming calls
+        peer.on('call', (call) => {
+            console.log('📞 Incoming call from:', call.peer);
+            
+            // Answer the call with local stream (if available)
+            if (localStream) {
+                call.answer(localStream);
+            } else {
+                // Create empty stream if no media available
+                const emptyStream = new MediaStream();
+                call.answer(emptyStream);
+            }
+
+            // Handle remote stream
+            call.on('stream', (stream) => {
+                console.log('✅ Received remote stream');
+                remoteStream = stream;
+                remoteVideo.srcObject = stream;
+                showStatus('Call connected!', 'success');
+                updateUI(true);
+            });
+
+            // Handle call close
+            call.on('close', () => {
+                console.log('📴 Call closed');
+                showStatus('Call ended', 'info');
+                cleanup();
+            });
+
+            // Handle call error
+            call.on('error', (error) => {
+                console.error('❌ Call error:', error);
+                showStatus('Call error: ' + error.message, 'error');
+            });
+
+            currentCall = call;
+        });
+
+        // Handle connection events
+        peer.on('connection', (conn) => {
+            console.log('🔗 Peer connection established');
+        });
+
+    } catch (error) {
+        console.error('❌ Error initializing PeerJS:', error);
+        showStatus('Failed to initialize connection. Please refresh the page.', 'error');
+    }
+}
+
+// ============================================
+// Media Access Functions
+// ============================================
+
+/**
+ * Get user media (camera/microphone)
+ * @param {boolean} withVideo - Whether to request video
+ * @param {boolean} withAudio - Whether to request audio
+ * @returns {Promise<MediaStream>} Media stream
+ */
+async function getUserMedia(withVideo, withAudio) {
+    try {
+        const constraints = {
+            video: withVideo ? {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: 'user'
+            } : false,
+            audio: withAudio ? {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            } : false
+        };
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log('✅ Got media stream:', {
+            video: stream.getVideoTracks().length > 0,
+            audio: stream.getAudioTracks().length > 0
+        });
+        return stream;
+
+    } catch (error) {
+        console.error('❌ Error getting user media:', error);
+        
+        // Provide user-friendly error messages
+        let errorMessage = 'Could not access ';
+        if (withVideo && withAudio) {
+            errorMessage += 'camera and microphone';
+        } else if (withVideo) {
+            errorMessage += 'camera';
         } else {
-            // Remote description not set yet, queue the candidate
-            console.log('📦 Queuing ICE candidate (waiting for remote description)');
-            iceCandidateQueue.push(candidate);
-        }
-    });
-
-    socket.on('error', (error) => {
-        console.error('❌ Server error:', error);
-        showStatus(error.message || 'Server error occurred', 'error');
-    });
-}
-
-// ============================================
-// WebRTC Connection Functions
-// ============================================
-
-function createPeerConnection() {
-    if (peerConnection) {
-        peerConnection.close();
-    }
-
-    peerConnection = new RTCPeerConnection(rtcConfig);
-
-    // Add local stream tracks (if available)
-    if (localStream && localStream.getTracks().length > 0) {
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-            console.log('✅ Added local track:', track.kind);
-        });
-    } else {
-        console.log('⚠️ No local tracks to add (no camera/mic available)');
-    }
-
-    // Add screen share tracks if active
-    if (screenStream && screenStream.getTracks().length > 0) {
-        screenStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, screenStream);
-            console.log('✅ Added screen share track:', track.kind);
-        });
-    }
-
-    peerConnection.onicecandidate = (event) => {
-        if (event.candidate && remoteUserId && socket && socket.connected) {
-            socket.emit('ice-candidate', {
-                candidate: event.candidate,
-                targetUserId: remoteUserId,
-                roomId: currentRoomId
-            });
-        }
-    };
-
-    peerConnection.ontrack = (event) => {
-        console.log('✅ Received remote track:', event.track.kind);
-        remoteStream = event.streams[0];
-        remoteVideo.srcObject = remoteStream;
-        updateNameOverlays();
-        showStatus('Call connected!', 'success');
-        updateUI(true);
-        isConnecting = false;
-        connectionAttempts = 0;
-    };
-
-    peerConnection.onconnectionstatechange = () => {
-        console.log('🔗 Connection state:', peerConnection.connectionState);
-        if (peerConnection.connectionState === 'connected') {
-            showStatus('Call connected!', 'success');
-            isConnecting = false;
-            connectionAttempts = 0;
-        } else if (peerConnection.connectionState === 'failed') {
-            showStatus('Connection failed. Retrying...', 'error');
-            if (connectionAttempts < 3 && localStream && remoteUserId) {
-                connectionAttempts++;
-                setTimeout(() => {
-                    cleanupConnection();
-                    establishConnection();
-                }, 2000);
-            }
-        }
-    };
-
-    peerConnection.oniceconnectionstatechange = () => {
-        console.log('🧊 ICE connection state:', peerConnection.iceConnectionState);
-        if (peerConnection.iceConnectionState === 'connected') {
-            showStatus('Network connected!', 'success');
-        } else if (peerConnection.iceConnectionState === 'failed') {
-            if (connectionAttempts < 3 && localStream && remoteUserId) {
-                connectionAttempts++;
-                setTimeout(() => {
-                    cleanupConnection();
-                    establishConnection();
-                }, 2000);
-            }
-        }
-    };
-}
-
-async function establishConnection() {
-    if (isConnecting || !remoteUserId || !socket || !socket.connected) {
-        return;
-    }
-    
-    // Allow connection even without local stream (user can still receive)
-    if (!localStream) {
-        // Create empty stream if needed
-        try {
-            localStream = new MediaStream();
-        } catch (e) {
-            console.warn('Could not create empty stream');
-        }
-    }
-
-    isConnecting = true;
-    showStatus('Establishing connection...', 'info');
-
-    try {
-        if (!peerConnection) {
-            createPeerConnection();
+            errorMessage += 'microphone';
         }
 
-        // Clear any queued candidates from previous connection
-        iceCandidateQueue = [];
-
-        // Create offer - whoever initiates becomes the caller
-        const offer = await peerConnection.createOffer({
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true
-        });
-
-        await peerConnection.setLocalDescription(offer);
-        console.log('✅ Local description set (offer)');
-
-        socket.emit('offer', {
-            offer: offer,
-            targetUserId: remoteUserId,
-            roomId: currentRoomId
-        });
-
-        isCaller = true;
-        console.log('✅ Offer created and sent');
-
-        // Timeout if no answer received
-        setTimeout(() => {
-            if (peerConnection && peerConnection.signalingState === 'have-local-offer') {
-                console.log('⚠️ No answer received, retrying...');
-                if (connectionAttempts < 3) {
-                    connectionAttempts++;
-                    cleanupConnection();
-                    setTimeout(() => establishConnection(), 1000);
-                }
-            }
-        }, 10000);
-
-    } catch (error) {
-        console.error('❌ Error establishing connection:', error);
-        showStatus('Failed to connect. Retrying...', 'error');
-        isConnecting = false;
-        if (connectionAttempts < 3) {
-            connectionAttempts++;
-            setTimeout(() => establishConnection(), 2000);
-        }
-    }
-}
-
-async function handleOffer(offer, senderId) {
-    if (isConnecting) {
-        console.log('⚠️ Already handling offer');
-        return;
-    }
-
-    try {
-        isConnecting = true;
-        console.log('📥 Handling offer from:', senderId);
-        showStatus('Incoming call...', 'info');
-
-        if (!peerConnection) {
-            createPeerConnection();
+        if (error.name === 'NotAllowedError') {
+            errorMessage += '. Please allow access and try again.';
+        } else if (error.name === 'NotFoundError') {
+            errorMessage += '. No device found.';
+        } else if (error.name === 'NotReadableError') {
+            errorMessage += '. Device may be in use by another application.';
+        } else {
+            errorMessage += '. Error: ' + error.message;
         }
 
-        // Clear any queued candidates from previous connection
-        iceCandidateQueue = [];
-
-        // Set remote description first
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-        console.log('✅ Remote description set');
-
-        // Process any queued ICE candidates
-        await processQueuedIceCandidates();
-
-        // Create and send answer
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
-        console.log('✅ Local description set');
-
-        if (socket && socket.connected) {
-            socket.emit('answer', {
-                answer: answer,
-                targetUserId: senderId,
-                roomId: currentRoomId
-            });
-            isCaller = false;
-            console.log('✅ Answer created and sent');
-        }
-
-    } catch (error) {
-        console.error('❌ Error handling offer:', error);
-        showStatus('Failed to answer call', 'error');
-        isConnecting = false;
-    }
-}
-
-async function handleAnswer(answer) {
-    try {
-        if (peerConnection && peerConnection.signalingState === 'have-local-offer') {
-            // Clear any queued candidates from previous connection
-            iceCandidateQueue = [];
-            
-            // Set remote description first
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-            console.log('✅ Remote description set from answer');
-
-            // Process any queued ICE candidates
-            await processQueuedIceCandidates();
-            
-            console.log('✅ Answer handled, connection established');
-        }
-    } catch (error) {
-        console.error('❌ Error handling answer:', error);
-        showStatus('Failed to establish connection', 'error');
+        showStatus(errorMessage, 'error');
+        throw error;
     }
 }
 
 /**
- * Process queued ICE candidates that arrived before remote description was set
+ * Get screen share stream
+ * @returns {Promise<MediaStream>} Screen share stream
  */
-async function processQueuedIceCandidates() {
-    if (iceCandidateQueue.length === 0) {
-        return;
-    }
+async function getScreenShare() {
+    try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+            video: {
+                cursor: 'always',
+                width: { ideal: 1920 },
+                height: { ideal: 1080 }
+            },
+            audio: true // Request audio for screen share (some browsers support this)
+        });
 
-    console.log(`📦 Processing ${iceCandidateQueue.length} queued ICE candidates`);
-    
-    while (iceCandidateQueue.length > 0) {
-        const candidate = iceCandidateQueue.shift();
-        try {
-            await peerConnection.addIceCandidate(candidate);
-            console.log('✅ Added queued ICE candidate');
-        } catch (error) {
-            // Ignore errors for queued candidates (might be duplicates or invalid)
-            if (error.message && !error.message.includes('InvalidStateError')) {
-                console.warn('⚠️ Could not add queued ICE candidate:', error.message);
-            }
-        }
-    }
-}
+        console.log('✅ Got screen share stream');
+        return stream;
 
-// ============================================
-// Media Functions
-// ============================================
-
-function getUserMedia(video, audio) {
-    return navigator.mediaDevices.getUserMedia({
-        video: video ? {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            facingMode: 'user'
-        } : false,
-        audio: audio ? {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-        } : false
-    });
-}
-
-function replaceTrackInPeerConnection(oldTrack, newTrack, stream) {
-    if (!peerConnection) return;
-
-    const sender = peerConnection.getSenders().find(s => 
-        s.track && s.track.kind === oldTrack.kind
-    );
-
-    if (sender) {
-        sender.replaceTrack(newTrack);
-        console.log(`✅ Replaced ${oldTrack.kind} track`);
-    } else {
-        // Add new track if no sender found
-        peerConnection.addTrack(newTrack, stream);
+    } catch (error) {
+        console.error('❌ Error getting screen share:', error);
+        showStatus('Could not share screen. ' + error.message, 'error');
+        throw error;
     }
 }
 
 // ============================================
-// Call Management
+// Call Management Functions
 // ============================================
 
+/**
+ * Start a call (video or voice)
+ * @param {boolean} withVideo - Whether to start with video
+ */
 async function startCall(withVideo) {
     try {
+        // Get user name and room ID
         userName = nameInput.value.trim();
         const roomId = roomIdInput.value.trim();
-        
+
         if (!userName) {
-            alert('Please enter your name');
-            nameInput.focus();
+            showStatus('Please enter your name', 'error');
             return;
         }
-        
+
         if (!roomId) {
-            alert('Please enter a Room Code');
-            roomIdInput.focus();
+            showStatus('Please enter a room code', 'error');
             return;
         }
 
-        console.log(`🚀 Starting ${withVideo ? 'video' : 'voice'} call in room: ${roomId}`);
-        showStatus(`Starting ${withVideo ? 'video' : 'voice'} call...`, 'info');
+        // Initialize socket if not already connected
+        if (!socket || !socket.connected) {
+            initializeSocket();
+            await new Promise((resolve) => {
+                if (socket) {
+                    socket.once('connect', resolve);
+                    setTimeout(resolve, 2000); // Timeout after 2 seconds
+                } else {
+                    resolve();
+                }
+            });
+        }
 
-        // Try to get user media, but continue even if it fails
+        // Initialize PeerJS if not already initialized
+        if (!peer || peer.destroyed) {
+            initializePeer();
+            // Wait for peer to be ready
+            await new Promise((resolve) => {
+                if (peer) {
+                    peer.once('open', resolve);
+                    setTimeout(resolve, 2000); // Timeout after 2 seconds
+                } else {
+                    resolve();
+                }
+            });
+        }
+
+        // Try to get user media (but continue even if it fails)
         try {
             localStream = await getUserMedia(withVideo, true);
-            console.log('✅ Got local media stream');
-            
             if (localStream) {
                 localVideo.srcObject = localStream;
-                localVideo.muted = true;
+                localVideo.muted = true; // Mute local video to avoid feedback
             }
-            updateNameOverlays();
         } catch (mediaError) {
             console.warn('⚠️ Could not access camera/microphone:', mediaError);
             
             // Create empty stream if no media available
+            // User can still join and receive audio/video from others
             try {
                 localStream = new MediaStream();
-                console.log('✅ Created empty media stream');
-                
-                // Show message that user can still connect without media
-                let warningMessage = 'No camera/microphone available. ';
-                if (mediaError.name === 'NotAllowedError') {
-                    warningMessage += 'You can still join and receive audio/video from others.';
-                } else if (mediaError.name === 'NotFoundError') {
-                    warningMessage += 'You can still join and receive audio/video from others.';
-                } else if (mediaError.name === 'NotReadableError') {
-                    warningMessage += 'You can still join and receive audio/video from others.';
-                } else {
-                    warningMessage += 'You can still join and receive audio/video from others.';
-                }
-                
-                showStatus(warningMessage, 'info');
-                
-                // Update UI to show user can still participate
-                localVideo.style.display = 'none'; // Hide local video if no stream
+                console.log('✅ Created empty media stream (no camera/mic)');
+                showStatus('No camera/microphone available. You can still join and receive audio/video.', 'info');
             } catch (streamError) {
                 console.error('❌ Failed to create empty stream:', streamError);
-                // Continue anyway - user can still join room
             }
         }
 
-        if (!socket || !socket.connected) {
-            initializeSocket();
-        }
+            // Join room on server
+        socket.emit('join-room', {
+            roomId: roomId,
+            userName: userName
+        });
 
-        if (!socket.connected) {
-            await new Promise((resolve, reject) => {
-                socket.once('connect', resolve);
-                socket.once('connect_error', reject);
-                setTimeout(() => reject(new Error('Connection timeout')), 5000);
+        showStatus('Joining room...', 'info');
+        
+        // Wait for PeerJS to be ready and send peer ID
+        if (peer && myPeerId) {
+            socket.emit('peer-id', {
+                roomId: roomId,
+                peerId: myPeerId
             });
         }
-
-        socket.emit('join-room', roomId);
-        updateUI(true);
         
+        updateUI(true);
+
         // Update button states based on available media
         if (!localStream || localStream.getAudioTracks().length === 0) {
             muteBtn.disabled = true;
-            muteBtn.textContent = 'No Mic Available';
+            muteBtn.textContent = '🔇 No Mic';
         }
         if (!localStream || localStream.getVideoTracks().length === 0) {
             cameraBtn.disabled = true;
-            cameraBtn.textContent = 'No Camera Available';
+            cameraBtn.textContent = '📷 No Camera';
         }
-        
-        showStatus(`Call started. Waiting for other user...`, 'info');
 
     } catch (error) {
         console.error('❌ Error starting call:', error);
-        showStatus(`Failed to start call: ${error.message}`, 'error');
+        showStatus('Failed to start call: ' + error.message, 'error');
         cleanup();
     }
 }
 
-function toggleMute() {
-    if (!localStream) {
-        showStatus('No microphone available', 'info');
-        return;
-    }
-
-    const audioTracks = localStream.getAudioTracks();
-    if (audioTracks.length === 0) {
-        showStatus('No microphone available', 'info');
-        return;
-    }
-
-    audioTracks.forEach(track => {
-        track.enabled = !track.enabled;
-    });
-
-    isMuted = !isMuted;
-    muteBtn.textContent = isMuted ? 'Unmute Audio' : 'Mute Audio';
-    muteBtn.className = isMuted ? 'btn-mute muted' : 'btn-mute';
-    
-    console.log(isMuted ? '🔇 Audio muted' : '🔊 Audio unmuted');
-    showStatus(isMuted ? 'Audio muted' : 'Audio unmuted', 'info');
-}
-
-async function toggleCamera() {
-    if (!localStream) {
-        showStatus('No camera available', 'info');
-        return;
-    }
-
+/**
+ * Connect to a specific user via PeerJS
+ * @param {string} peerId - PeerJS ID of the user to connect to
+ */
+async function connectToUser(peerId) {
     try {
-        const videoTrack = localStream.getVideoTracks()[0];
-        if (!videoTrack) {
-            // Try to get camera if no track exists
-            try {
-                const newStream = await getUserMedia(true, false);
-                const newVideoTrack = newStream.getVideoTracks()[0];
-                if (newVideoTrack) {
-                    localStream.addTrack(newVideoTrack);
-                    localVideo.srcObject = localStream;
-                    localVideo.style.display = 'block';
-                    updateNameOverlays();
-                    
-                    if (peerConnection) {
-                        peerConnection.addTrack(newVideoTrack, localStream);
-                    }
-                    
-                    isCameraOff = false;
-                    cameraBtn.textContent = 'Turn Camera Off';
-                    cameraBtn.className = 'btn-camera';
-                    showStatus('Camera turned on', 'success');
-                }
-            } catch (error) {
-                showStatus('No camera available', 'info');
-            }
+        if (!peer || peer.destroyed) {
+            console.warn('⚠️ Peer not initialized, waiting...');
+            setTimeout(() => connectToUser(peerId), 1000);
             return;
         }
 
-        if (isCameraOff) {
-            // Turn camera on
-            const newStream = await getUserMedia(true, false);
-            const newVideoTrack = newStream.getVideoTracks()[0];
-            
-            if (peerConnection) {
-                replaceTrackInPeerConnection(videoTrack, newVideoTrack, newStream);
-            }
-            
-            localStream.removeTrack(videoTrack);
-            videoTrack.stop();
-            localStream.addTrack(newVideoTrack);
-            
-            isCameraOff = false;
-            cameraBtn.textContent = 'Turn Camera Off';
-            cameraBtn.className = 'btn-camera';
-            showStatus('Camera turned on', 'success');
-        } else {
-            // Turn camera off
-            videoTrack.enabled = false;
-            if (peerConnection) {
-                // Send black frame
-                const canvas = document.createElement('canvas');
-                canvas.width = 640;
-                canvas.height = 480;
-                const ctx = canvas.getContext('2d');
-                ctx.fillStyle = 'black';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                
-                const stream = canvas.captureStream(0);
-                const newTrack = stream.getVideoTracks()[0];
-                replaceTrackInPeerConnection(videoTrack, newTrack, stream);
-            }
-            
-            isCameraOff = true;
-            cameraBtn.textContent = 'Turn Camera On';
-            cameraBtn.className = 'btn-camera off';
-            showStatus('Camera turned off', 'info');
+        if (!peer.open) {
+            console.warn('⚠️ Peer not ready, waiting...');
+            peer.once('open', () => connectToUser(peerId));
+            return;
         }
+
+        console.log('🔗 Connecting to user with PeerJS ID:', peerId);
+
+        if (!peer || !peer.open) {
+            console.warn('⚠️ Peer not ready, waiting...');
+            setTimeout(() => connectToUser(peerId), 1000);
+            return;
+        }
+
+        // Create call with local stream (or empty stream if no media)
+        const streamToSend = localStream || new MediaStream();
+        
+        const call = peer.call(peerId, streamToSend);
+        
+        if (!call) {
+            console.warn('⚠️ Could not create call, user may not be ready');
+            showStatus('Waiting for other user to be ready...', 'info');
+            setTimeout(() => connectToUser(peerId), 2000);
+            return;
+        }
+
+        // Handle remote stream
+        call.on('stream', (stream) => {
+            console.log('✅ Received remote stream');
+            remoteStream = stream;
+            remoteVideo.srcObject = stream;
+            showStatus('Call connected!', 'success');
+            updateUI(true);
+        });
+
+        // Handle call close
+        call.on('close', () => {
+            console.log('📴 Call closed');
+            if (currentCall === call) {
+                showStatus('Call ended', 'info');
+                cleanup();
+            }
+        });
+
+        // Handle call error
+        call.on('error', (error) => {
+            console.error('❌ Call error:', error);
+            showStatus('Connection error. Trying to reconnect...', 'error');
+            // Try to reconnect after a delay
+            setTimeout(() => {
+                if (remoteUserId) {
+                    connectToUser(remoteUserId);
+                }
+            }, 3000);
+        });
+
+        currentCall = call;
+
+    } catch (error) {
+        console.error('❌ Error connecting to user:', error);
+        showStatus('Failed to connect. Please try again.', 'error');
+        
+        // Retry connection
+        setTimeout(() => {
+            if (remotePeerId) {
+                connectToUser(remotePeerId);
+            }
+        }, 3000);
+    }
+}
+
+// ============================================
+// Call Control Functions
+// ============================================
+
+/**
+ * Toggle mute/unmute microphone
+ */
+function toggleMute() {
+    try {
+        if (!localStream) {
+            showStatus('No microphone available', 'error');
+            return;
+        }
+
+        const audioTracks = localStream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            showStatus('No audio track available', 'error');
+            return;
+        }
+
+        isMuted = !isMuted;
+        audioTracks.forEach(track => {
+            track.enabled = !isMuted;
+        });
+
+        muteBtn.textContent = isMuted ? '🔇 Unmute' : '🔊 Mute';
+        muteBtn.className = isMuted ? 'btn-muted' : 'btn-warning';
+
+        showStatus(isMuted ? 'Microphone muted' : 'Microphone unmuted', 'info');
+
+    } catch (error) {
+        console.error('❌ Error toggling mute:', error);
+        showStatus('Failed to toggle mute', 'error');
+    }
+}
+
+/**
+ * Toggle camera on/off
+ */
+function toggleCamera() {
+    try {
+        if (!localStream) {
+            showStatus('No camera available', 'error');
+            return;
+        }
+
+        const videoTracks = localStream.getVideoTracks();
+        if (videoTracks.length === 0) {
+            showStatus('No video track available', 'error');
+            return;
+        }
+
+        isCameraOff = !isCameraOff;
+        videoTracks.forEach(track => {
+            track.enabled = !isCameraOff;
+        });
+
+        cameraBtn.textContent = isCameraOff ? '📷 Camera Off' : '📷 Camera On';
+        cameraBtn.className = isCameraOff ? 'btn-camera-off' : 'btn-info';
+
+        // Update local video display
+        if (isCameraOff) {
+            localVideo.style.opacity = '0.5';
+        } else {
+            localVideo.style.opacity = '1';
+        }
+
+        showStatus(isCameraOff ? 'Camera turned off' : 'Camera turned on', 'info');
+
     } catch (error) {
         console.error('❌ Error toggling camera:', error);
         showStatus('Failed to toggle camera', 'error');
     }
 }
 
+/**
+ * Toggle screen sharing
+ */
 async function toggleScreenShare() {
     try {
-        if (!isSharingScreen) {
-            // Start screen sharing
-            screenStream = await navigator.mediaDevices.getDisplayMedia({
-                video: true,
-                audio: true
-            });
-
-            screenStream.getVideoTracks()[0].onended = () => {
-                toggleScreenShare(); // Stop sharing when user stops
-            };
-
-            if (peerConnection) {
-                const videoTrack = screenStream.getVideoTracks()[0];
-                const audioTrack = screenStream.getAudioTracks()[0];
-                
-                if (videoTrack) {
-                    const localVideoTrack = localStream.getVideoTracks()[0];
-                    if (localVideoTrack) {
-                        replaceTrackInPeerConnection(localVideoTrack, videoTrack, screenStream);
-                    } else {
-                        peerConnection.addTrack(videoTrack, screenStream);
-                    }
-                }
-                
-                if (audioTrack) {
-                    const localAudioTrack = localStream.getAudioTracks()[0];
-                    if (localAudioTrack) {
-                        replaceTrackInPeerConnection(localAudioTrack, audioTrack, screenStream);
-                    }
-                }
-            }
-
-            // Show screen share in local video
-            localVideo.srcObject = screenStream;
-            
-            isSharingScreen = true;
-            screenShareBtn.textContent = 'Stop Sharing';
-            screenShareBtn.className = 'btn-screen active';
-            showStatus('Screen sharing started', 'success');
-        } else {
+        if (isSharingScreen) {
             // Stop screen sharing
             if (screenStream) {
                 screenStream.getTracks().forEach(track => track.stop());
+                screenStream = null;
             }
 
-            if (peerConnection && localStream) {
-                const localVideoTrack = localStream.getVideoTracks()[0];
-                if (localVideoTrack) {
-                    const screenVideoTrack = screenStream ? screenStream.getVideoTracks()[0] : null;
-                    if (screenVideoTrack) {
-                        replaceTrackInPeerConnection(screenVideoTrack, localVideoTrack, localStream);
+            // Restore local video stream
+            if (localStream && currentCall) {
+                // Replace video track in the call
+                const videoTrack = localStream.getVideoTracks()[0];
+                if (videoTrack && currentCall.peerConnection) {
+                    const sender = currentCall.peerConnection.getSenders().find(s => {
+                        return s.track && s.track.kind === 'video';
+                    });
+                    if (sender && videoTrack) {
+                        sender.replaceTrack(videoTrack);
                     }
                 }
             }
 
-            localVideo.srcObject = localStream;
-            screenStream = null;
-            
             isSharingScreen = false;
-            screenShareBtn.textContent = 'Share Screen';
-            screenShareBtn.className = 'btn-screen';
+            screenShareBtn.textContent = '🖥️ Share Screen';
+            screenShareBtn.className = 'btn-info';
             showStatus('Screen sharing stopped', 'info');
+
+        } else {
+            // Start screen sharing
+            try {
+                screenStream = await getScreenShare();
+                
+                if (screenStream && currentCall) {
+                    // Replace video track in the call
+                    const videoTrack = screenStream.getVideoTracks()[0];
+                    if (videoTrack && currentCall.peerConnection) {
+                        const sender = currentCall.peerConnection.getSenders().find(s => {
+                            return s.track && s.track.kind === 'video';
+                        });
+                        if (sender && videoTrack) {
+                            sender.replaceTrack(videoTrack);
+                        }
+                    }
+
+                    // Show screen share in local video
+                    localVideo.srcObject = screenStream;
+
+                    // Handle screen share ending
+                    screenStream.getVideoTracks()[0].onended = () => {
+                        toggleScreenShare();
+                    };
+
+                    isSharingScreen = true;
+                    screenShareBtn.textContent = '🛑 Stop Sharing';
+                    screenShareBtn.className = 'btn-danger';
+                    showStatus('Screen sharing started', 'success');
+                }
+            } catch (error) {
+                console.error('❌ Error starting screen share:', error);
+                showStatus('Could not start screen sharing. ' + error.message, 'error');
+            }
         }
+
     } catch (error) {
         console.error('❌ Error toggling screen share:', error);
-        if (error.name !== 'NotAllowedError') {
-            showStatus('Failed to share screen', 'error');
-        }
-        isSharingScreen = false;
-        screenShareBtn.textContent = 'Share Screen';
-        screenShareBtn.className = 'btn-screen';
+        showStatus('Failed to toggle screen share', 'error');
     }
 }
 
+/**
+ * End the current call
+ */
 function endCall() {
-    console.log('📴 Leaving call');
-    
-    if (socket && socket.connected && currentRoomId) {
-        socket.emit('leave-room', { roomId: currentRoomId });
-    }
+    try {
+        // Notify server
+        if (socket && socket.connected && currentRoomId) {
+            socket.emit('end-call', { roomId: currentRoomId });
+        }
 
-    cleanup();
+        cleanup();
+
+    } catch (error) {
+        console.error('❌ Error ending call:', error);
+        cleanup(); // Clean up anyway
+    }
 }
 
 // ============================================
-// Initialization
+// Initialize on Page Load
 // ============================================
 
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('🚀 WebRTC Client initialized');
+// Initialize when page loads
+window.addEventListener('DOMContentLoaded', () => {
+    console.log('✅ Page loaded, initializing...');
     
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        alert('Your browser does not support WebRTC. Please use a modern browser.');
-        showStatus('Browser not supported', 'error');
-        return;
-    }
-
-    if (!window.RTCPeerConnection) {
-        alert('Your browser does not support WebRTC.');
-        showStatus('WebRTC not supported', 'error');
-        return;
-    }
-
+    // Initialize socket connection
     initializeSocket();
-
-    window.addEventListener('beforeunload', () => {
-        if (reconnectTimeout) clearTimeout(reconnectTimeout);
-        endCall();
-        if (socket) socket.disconnect();
-    });
-
-    nameInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !startVideoBtn.disabled) {
-            roomIdInput.focus();
-        }
-    });
     
-    roomIdInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !startVideoBtn.disabled) {
-            startCall(true);
-        }
-    });
+    // Initialize PeerJS
+    initializePeer();
     
-    console.log('📱 Server URL:', SERVER_URL);
+    showStatus('Ready to start a call', 'info');
+});
+
+// Handle page unload
+window.addEventListener('beforeunload', () => {
+    cleanup();
 });

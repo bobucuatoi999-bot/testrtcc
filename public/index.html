@@ -3,310 +3,312 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC Call Prototype</title>
+    <title>WebRTC Video & Voice Call</title>
     <style>
-        /* Basic styling for the call interface */
+        /* ============================================
+           Global Styles
+           ============================================ */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
         body {
-            font-family: Arial, sans-serif;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
             max-width: 1200px;
             margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 30px;
         }
 
         h1 {
             text-align: center;
-            color: #333;
+            color: #667eea;
             margin-bottom: 30px;
+            font-size: 2.5em;
         }
 
-        /* Container for room ID input and buttons */
+        /* ============================================
+           Control Panel
+           ============================================ */
         .controls {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 15px;
-            margin-bottom: 30px;
-            padding: 20px;
-            background-color: white;
+            background: #f8f9fa;
+            padding: 25px;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
         }
 
-        /* Name and Room ID input fields */
-        #nameInput,
-        #roomIdInput {
-            width: 300px;
-            padding: 10px;
+        .input-group {
+            margin-bottom: 15px;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
             font-size: 16px;
             border: 2px solid #ddd;
-            border-radius: 4px;
-            text-align: center;
+            border-radius: 6px;
+            transition: border-color 0.3s;
         }
 
-        #nameInput:focus,
-        #roomIdInput:focus {
+        input[type="text"]:focus {
             outline: none;
-            border-color: #4CAF50;
+            border-color: #667eea;
         }
 
-        /* Button container */
         .button-group {
             display: flex;
             gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 20px;
         }
 
-        /* Call buttons styling */
+        /* ============================================
+           Buttons
+           ============================================ */
         button {
             padding: 12px 24px;
             font-size: 16px;
+            font-weight: 600;
             border: none;
-            border-radius: 4px;
+            border-radius: 6px;
             cursor: pointer;
-            transition: background-color 0.3s;
-            margin: 5px;
+            transition: all 0.3s;
+            flex: 1;
+            min-width: 120px;
         }
 
-        button:hover {
-            opacity: 0.9;
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         }
 
-        button:active {
-            transform: scale(0.98);
-        }
-
-        .btn-video {
-            background-color: #4CAF50;
-            color: white;
-        }
-
-        .btn-voice {
-            background-color: #2196F3;
-            color: white;
-        }
-
-        .btn-mute {
-            background-color: #FF9800;
-            color: white;
-        }
-
-        .btn-mute.muted {
-            background-color: #f44336;
-        }
-
-        .btn-camera {
-            background-color: #2196F3;
-            color: white;
-        }
-
-        .btn-camera.off {
-            background-color: #757575;
-        }
-
-        .btn-screen {
-            background-color: #9C27B0;
-            color: white;
-        }
-
-        .btn-screen.active {
-            background-color: #f44336;
-        }
-
-        .btn-end {
-            background-color: #f44336;
-            color: white;
+        button:active:not(:disabled) {
+            transform: translateY(0);
         }
 
         button:disabled {
-            background-color: #ccc;
+            opacity: 0.5;
             cursor: not-allowed;
         }
 
-        /* Video container */
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-success {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .btn-warning {
+            background: #FF9800;
+            color: white;
+        }
+
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-info {
+            background: #2196F3;
+            color: white;
+        }
+
+        .btn-muted {
+            background: #9e9e9e;
+            color: white;
+        }
+
+        .btn-camera-off {
+            background: #757575;
+            color: white;
+        }
+
+        /* ============================================
+           Video Container
+           ============================================ */
         .video-container {
-            display: flex;
-            justify-content: center;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
             gap: 20px;
-            flex-wrap: wrap;
             margin-bottom: 20px;
         }
 
-        /* Video element styling */
-        video {
-            width: 45%;
-            min-width: 300px;
-            max-width: 500px;
-            height: auto;
-            margin: 10px;
-            border: 1px solid #ccc;
-            border-radius: 8px;
-            background-color: #000;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-
-        /* Video labels */
         .video-wrapper {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
             position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
         }
 
         .video-label {
-            margin-bottom: 5px;
-            font-weight: bold;
-            color: #666;
-        }
-
-        /* Name overlay on video corner */
-        .name-overlay {
             position: absolute;
-            bottom: 10px;
+            top: 10px;
             left: 10px;
-            background: rgba(0, 0, 0, 0.7);
+            background: rgba(0,0,0,0.7);
             color: white;
-            padding: 6px 12px;
+            padding: 5px 10px;
             border-radius: 4px;
             font-size: 14px;
-            font-weight: bold;
             z-index: 10;
-            pointer-events: none;
         }
 
-        .video-wrapper video {
-            position: relative;
+        video {
+            width: 100%;
+            height: auto;
+            display: block;
+            min-height: 300px;
+            background: #000;
         }
 
-        /* Status messages */
+        /* ============================================
+           Status Messages
+           ============================================ */
         .status {
             text-align: center;
-            padding: 10px;
-            margin: 10px 0;
-            border-radius: 4px;
-            font-weight: bold;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 6px;
+            font-weight: 600;
+            display: none;
         }
 
         .status.info {
-            background-color: #e3f2fd;
+            background: #e3f2fd;
             color: #1976d2;
         }
 
-        .status.error {
-            background-color: #ffebee;
-            color: #c62828;
-        }
-
         .status.success {
-            background-color: #e8f5e9;
+            background: #e8f5e9;
             color: #2e7d32;
         }
 
-        /* Responsive design for mobile */
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        /* ============================================
+           Responsive Design
+           ============================================ */
         @media (max-width: 768px) {
-            video {
-                width: 100%;
-                min-width: 100%;
+            .video-container {
+                grid-template-columns: 1fr;
             }
 
             .button-group {
                 flex-direction: column;
-                width: 100%;
             }
 
             button {
                 width: 100%;
             }
+
+            h1 {
+                font-size: 1.8em;
+            }
         }
     </style>
 </head>
 <body>
-    <!-- Main heading -->
-    <h1>WebRTC Call Prototype</h1>
+    <div class="container">
+        <h1>🎥 WebRTC Video & Voice Call</h1>
 
-    <!-- Status display area -->
-    <div id="status" class="status info" style="display: none;"></div>
+        <!-- Status Display -->
+        <div id="status" class="status info"></div>
 
-    <!-- Control panel for name, room ID and call buttons -->
-    <div class="controls">
-        <!-- Name input field -->
-        <input 
-            type="text" 
-            id="nameInput" 
-            placeholder="Enter Your Name" 
-            maxlength="30"
-        >
-        
-        <!-- Room ID input field -->
-        <input 
-            type="text" 
-            id="roomIdInput" 
-            placeholder="Enter Room Code (e.g., mycall)" 
-            maxlength="50"
-        >
-        
-        <!-- Button group for starting calls -->
-        <div class="button-group">
-            <button id="startVideoBtn" class="btn-video" onclick="startCall(true)">
-                Start Video Call
-            </button>
-            <button id="startVoiceBtn" class="btn-voice" onclick="startCall(false)">
-                Start Voice Call
-            </button>
+        <!-- Control Panel -->
+        <div class="controls">
+            <div class="input-group">
+                <label for="nameInput">Your Name</label>
+                <input 
+                    type="text" 
+                    id="nameInput" 
+                    placeholder="Enter your name" 
+                    maxlength="30"
+                >
+            </div>
+
+            <div class="input-group">
+                <label for="roomIdInput">Room Code</label>
+                <input 
+                    type="text" 
+                    id="roomIdInput" 
+                    placeholder="Enter room code (e.g., room123)" 
+                    maxlength="50"
+                >
+            </div>
+
+            <div class="button-group">
+                <button id="startVideoBtn" class="btn-primary" onclick="startCall(true)">
+                    📹 Start Video Call
+                </button>
+                <button id="startVoiceBtn" class="btn-success" onclick="startCall(false)">
+                    🎤 Start Voice Call
+                </button>
+            </div>
+
+            <div class="button-group">
+                <button id="muteBtn" class="btn-warning" onclick="toggleMute()" disabled>
+                    🔇 Mute
+                </button>
+                <button id="cameraBtn" class="btn-info" onclick="toggleCamera()" disabled>
+                    📷 Camera On
+                </button>
+                <button id="screenShareBtn" class="btn-info" onclick="toggleScreenShare()" disabled>
+                    🖥️ Share Screen
+                </button>
+                <button id="endCallBtn" class="btn-danger" onclick="endCall()" disabled>
+                    ❌ End Call
+                </button>
+            </div>
         </div>
 
-        <!-- Button group for call controls -->
-        <div class="button-group">
-            <button id="muteBtn" class="btn-mute" onclick="toggleMute()" disabled>
-                Mute Audio
-            </button>
-            <button id="cameraBtn" class="btn-camera" onclick="toggleCamera()" disabled>
-                Turn Camera Off
-            </button>
-            <button id="screenShareBtn" class="btn-screen" onclick="toggleScreenShare()" disabled>
-                Share Screen
-            </button>
-            <button id="endCallBtn" class="btn-end" onclick="endCall()" disabled>
-                End Call
-            </button>
-        </div>
-    </div>
+        <!-- Video Container -->
+        <div class="video-container">
+            <div class="video-wrapper">
+                <div class="video-label">Your Video</div>
+                <video id="localVideo" autoplay playsinline muted></video>
+            </div>
 
-    <!-- Video container with local and remote video elements -->
-    <div class="video-container">
-        <!-- Local video (your own camera/mic) -->
-        <div class="video-wrapper">
-            <div class="video-label">Your Video</div>
-            <video 
-                id="localVideo" 
-                autoplay 
-                playsinline 
-                muted
-            ></video>
-            <div id="localNameOverlay" class="name-overlay" style="display: none;"></div>
-        </div>
-
-        <!-- Remote video (other person's camera/mic) -->
-        <div class="video-wrapper">
-            <div class="video-label">Remote Video</div>
-            <video 
-                id="remoteVideo" 
-                autoplay 
-                playsinline
-            ></video>
-            <div id="remoteNameOverlay" class="name-overlay" style="display: none;"></div>
+            <div class="video-wrapper">
+                <div class="video-label">Remote Video</div>
+                <video id="remoteVideo" autoplay playsinline></video>
+            </div>
         </div>
     </div>
 
+    <!-- Load PeerJS library from CDN -->
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    
     <!-- Load Socket.io client library from the server -->
     <script src="/socket.io/socket.io.js"></script>
     
-    <!-- Server configuration - Load config.js first -->
+    <!-- Load server configuration -->
     <script src="config.js"></script>
-    
-    <!-- Note: Using native WebRTC API instead of PeerJS for better reliability -->
     
     <!-- Load our custom client-side JavaScript -->
     <script src="client.js"></script>
 </body>
 </html>
-
