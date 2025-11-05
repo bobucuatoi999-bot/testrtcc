@@ -570,12 +570,6 @@ async function connectToUser(peerId) {
 
         console.log('🔗 Connecting to user with PeerJS ID:', peerId);
 
-        if (!peer || !peer.open) {
-            console.warn('⚠️ Peer not ready, waiting...');
-            setTimeout(() => connectToUser(peerId), 1000);
-            return;
-        }
-
         // Create call with local stream (or empty stream if no media)
         const streamToSend = localStream || new MediaStream();
         
