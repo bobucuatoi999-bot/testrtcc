@@ -14,7 +14,14 @@ let isMuted = false;            // Mute state
 let currentRoomId = null;       // Currently joined room ID
 let userName = null;            // User's name
 let remoteUserId = null;        // Currently connected user's socket ID
+let remoteUserName = null;      // Remote user's name
 let isCaller = false;           // Whether this user initiated the call
+let reconnectAttempts = 0;      // Reconnection attempt counter
+let maxReconnectAttempts = 5;   // Maximum reconnection attempts
+let reconnectTimeout = null;     // Reconnection timeout
+
+// Store user names by socket ID
+const userNames = new Map();     // { socketId: userName }
 
 // ============================================
 // Server Configuration
@@ -42,6 +49,8 @@ const startVoiceBtn = document.getElementById('startVoiceBtn');
 const muteBtn = document.getElementById('muteBtn');
 const endCallBtn = document.getElementById('endCallBtn');
 const statusDiv = document.getElementById('status');
+const localNameOverlay = document.getElementById('localNameOverlay');
+const remoteNameOverlay = document.getElementById('remoteNameOverlay');
 
 // ============================================
 // Utility Functions
@@ -66,6 +75,27 @@ function showStatus(message, type = 'info') {
 }
 
 /**
+ * Update name overlay on video
+ */
+function updateNameOverlays() {
+    // Update local name overlay
+    if (userName && localStream) {
+        localNameOverlay.textContent = userName;
+        localNameOverlay.style.display = 'block';
+    } else {
+        localNameOverlay.style.display = 'none';
+    }
+
+    // Update remote name overlay
+    if (remoteUserName && remoteStream) {
+        remoteNameOverlay.textContent = remoteUserName;
+        remoteNameOverlay.style.display = 'block';
+    } else {
+        remoteNameOverlay.style.display = 'none';
+    }
+}
+
+/**
  * Enable or disable UI buttons based on call state
  * @param {boolean} inCall - Whether user is currently in a call
  */
@@ -79,7 +109,32 @@ function updateUI(inCall) {
 }
 
 /**
- * Clean up media streams and connections
+ * Clean up media streams and connections (but stay in room)
+ */
+function cleanupConnection() {
+    // Close peer connection
+    if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+    }
+
+    // Clear remote video
+    if (remoteVideo.srcObject) {
+        remoteVideo.srcObject = null;
+    }
+
+    // Reset remote variables but keep room info
+    remoteStream = null;
+    remoteUserId = null;
+    remoteUserName = null;
+    isCaller = false;
+    
+    // Update name overlays
+    updateNameOverlays();
+}
+
+/**
+ * Full cleanup - leave room and clean everything
  */
 function cleanup() {
     // Stop local stream tracks (camera/mic)
@@ -105,16 +160,79 @@ function cleanup() {
         remoteVideo.srcObject = null;
     }
 
+    // Leave room on server
+    if (socket && socket.connected && currentRoomId) {
+        socket.emit('leave-room', { roomId: currentRoomId });
+    }
+
     // Reset variables
     remoteStream = null;
     remoteUserId = null;
+    remoteUserName = null;
     currentRoomId = null;
     isMuted = false;
     isCaller = false;
+    reconnectAttempts = 0;
+    
+    // Clear name overlays
+    localNameOverlay.style.display = 'none';
+    remoteNameOverlay.style.display = 'none';
     
     // Update UI
     updateUI(false);
-    showStatus('Call ended. Ready for new call.', 'info');
+    showStatus('Left room. Ready for new call.', 'info');
+}
+
+/**
+ * Auto-reconnect attempt with exponential backoff
+ */
+async function attemptReconnect() {
+    if (reconnectAttempts >= maxReconnectAttempts) {
+        showStatus('Max reconnection attempts reached. Please try again.', 'error');
+        return;
+    }
+
+    reconnectAttempts++;
+    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 10000); // Exponential backoff, max 10s
+    
+    showStatus(`Reconnecting... (Attempt ${reconnectAttempts}/${maxReconnectAttempts})`, 'info');
+    
+    reconnectTimeout = setTimeout(async () => {
+        try {
+            // Reconnect socket if disconnected
+            if (!socket || !socket.connected) {
+                if (socket) {
+                    socket.disconnect();
+                }
+                initializeSocket();
+                
+                // Wait for connection
+                await new Promise((resolve, reject) => {
+                    socket.once('connect', resolve);
+                    socket.once('connect_error', reject);
+                    setTimeout(() => reject(new Error('Timeout')), 5000);
+                });
+            }
+
+            // Rejoin room if we have room ID
+            if (currentRoomId && localStream) {
+                socket.emit('join-room', currentRoomId);
+                
+                // Wait a bit then try to reconnect peer connection
+                setTimeout(() => {
+                    if (remoteUserId && localStream) {
+                        createOffer(remoteUserId);
+                    }
+                }, 1000);
+            }
+
+            reconnectAttempts = 0; // Reset on success
+            showStatus('Reconnected successfully!', 'success');
+        } catch (error) {
+            console.error('❌ Reconnection failed:', error);
+            attemptReconnect(); // Try again
+        }
+    }, delay);
 }
 
 // ============================================
@@ -131,7 +249,7 @@ function initializeSocket() {
         transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionDelay: 1000,
-        reconnectionAttempts: 5
+        reconnectionAttempts: 10
     });
 
     // ============================================
@@ -142,18 +260,28 @@ function initializeSocket() {
     socket.on('connect', () => {
         console.log('✅ Connected to signaling server:', socket.id);
         showStatus('Connected to server', 'success');
+        reconnectAttempts = 0; // Reset on successful connection
     });
 
     // Connection error
     socket.on('connect_error', (error) => {
         console.error('❌ Connection error:', error);
-        showStatus('Failed to connect to server. Make sure the server is running.', 'error');
+        showStatus('Failed to connect to server. Retrying...', 'error');
+        if (currentRoomId) {
+            attemptReconnect();
+        }
     });
 
     // Disconnected from server
     socket.on('disconnect', (reason) => {
         console.log('⚠️ Disconnected from server:', reason);
-        showStatus('Disconnected from server', 'error');
+        if (reason === 'io server disconnect') {
+            // Server disconnected us, try to reconnect
+            socket.connect();
+        } else if (currentRoomId) {
+            showStatus('Connection lost. Attempting to reconnect...', 'error');
+            attemptReconnect();
+        }
     });
 
     // Successfully joined a room
@@ -163,8 +291,20 @@ function initializeSocket() {
         // Send user name to server if available
         if (userName) {
             socket.emit('user-name', { name: userName, roomId: data.roomId });
+            userNames.set(socket.id, userName);
         }
         showStatus(`${userName || 'You'} joined room: ${data.roomId}`, 'success');
+        updateNameOverlays();
+    });
+
+    // User name updated
+    socket.on('user-name-updated', (data) => {
+        console.log('👤 User name updated:', data.userId, data.name);
+        userNames.set(data.userId, data.name);
+        if (data.userId === remoteUserId) {
+            remoteUserName = data.name;
+            updateNameOverlays();
+        }
     });
 
     // Existing users in the room
@@ -173,6 +313,9 @@ function initializeSocket() {
         if (data.users && data.users.length > 0) {
             // Connect to the first existing user (1-on-1 call)
             remoteUserId = data.users[0];
+            // Get remote user's name if available
+            remoteUserName = userNames.get(remoteUserId) || 'User';
+            updateNameOverlays();
             createOffer(data.users[0]);
         }
     });
@@ -185,6 +328,8 @@ function initializeSocket() {
         // If we have a local stream, create offer to connect
         if (localStream && !peerConnection) {
             remoteUserId = data.userId;
+            remoteUserName = userNames.get(data.userId) || 'User';
+            updateNameOverlays();
             createOffer(data.userId);
         }
     });
@@ -193,22 +338,27 @@ function initializeSocket() {
     socket.on('user-left', (data) => {
         console.log('👋 User left:', data.userId);
         if (data.userId === remoteUserId) {
-            showStatus('Other user left the call', 'info');
-            cleanup();
+            showStatus('Other user left. Waiting for new user...', 'info');
+            cleanupConnection(); // Clean connection but stay in room
+            // Wait for new user to join
         }
     });
 
-    // Call ended notification
+    // Call ended notification (not used anymore, but kept for compatibility)
     socket.on('call-ended', (data) => {
         console.log('📴 Call ended by:', data.userId);
-        showStatus('Call ended by other user', 'info');
-        cleanup();
+        if (data.userId === remoteUserId) {
+            showStatus('Other user ended call', 'info');
+            cleanupConnection();
+        }
     });
 
     // Receive WebRTC offer
     socket.on('offer', async (data) => {
         console.log('📥 Received offer from:', data.senderId);
         remoteUserId = data.senderId;
+        remoteUserName = userNames.get(data.senderId) || 'User';
+        updateNameOverlays();
         await handleOffer(data.offer, data.senderId);
     });
 
@@ -245,6 +395,11 @@ function initializeSocket() {
  * Create RTCPeerConnection and set up event handlers
  */
 function createPeerConnection() {
+    // Close existing connection if any
+    if (peerConnection) {
+        peerConnection.close();
+    }
+
     // Create peer connection with STUN servers
     peerConnection = new RTCPeerConnection(rtcConfig);
 
@@ -258,7 +413,7 @@ function createPeerConnection() {
 
     // Handle ICE candidates - send to remote peer via signaling
     peerConnection.onicecandidate = (event) => {
-        if (event.candidate && remoteUserId) {
+        if (event.candidate && remoteUserId && socket && socket.connected) {
             console.log('📤 Sending ICE candidate');
             socket.emit('ice-candidate', {
                 candidate: event.candidate,
@@ -273,23 +428,35 @@ function createPeerConnection() {
         console.log('✅ Received remote track:', event.track.kind);
         remoteStream = event.streams[0];
         remoteVideo.srcObject = remoteStream;
+        updateNameOverlays();
         showStatus('Call connected!', 'success');
         updateUI(true);
+        reconnectAttempts = 0; // Reset on successful connection
     };
 
     // Handle connection state changes
     peerConnection.onconnectionstatechange = () => {
         console.log('🔗 Connection state:', peerConnection.connectionState);
         if (peerConnection.connectionState === 'failed') {
-            showStatus('Connection failed. Trying to reconnect...', 'error');
+            showStatus('Connection failed. Attempting to reconnect...', 'error');
             // Attempt to reconnect
-            if (localStream && remoteUserId) {
-                if (isCaller) {
+            setTimeout(() => {
+                if (localStream && remoteUserId && socket && socket.connected) {
+                    cleanupConnection();
                     createOffer(remoteUserId);
                 }
-            }
+            }, 2000);
         } else if (peerConnection.connectionState === 'connected') {
             showStatus('Call connected!', 'success');
+            reconnectAttempts = 0;
+        } else if (peerConnection.connectionState === 'disconnected') {
+            showStatus('Connection lost. Reconnecting...', 'error');
+            setTimeout(() => {
+                if (localStream && remoteUserId && socket && socket.connected) {
+                    cleanupConnection();
+                    createOffer(remoteUserId);
+                }
+            }, 2000);
         }
     };
 
@@ -297,7 +464,16 @@ function createPeerConnection() {
     peerConnection.oniceconnectionstatechange = () => {
         console.log('🧊 ICE connection state:', peerConnection.iceConnectionState);
         if (peerConnection.iceConnectionState === 'failed') {
-            showStatus('Network connection failed', 'error');
+            showStatus('Network connection failed. Retrying...', 'error');
+            // Attempt to reconnect
+            setTimeout(() => {
+                if (localStream && remoteUserId && socket && socket.connected) {
+                    cleanupConnection();
+                    createOffer(remoteUserId);
+                }
+            }, 2000);
+        } else if (peerConnection.iceConnectionState === 'connected') {
+            showStatus('Network connected!', 'success');
         }
     };
 }
@@ -325,18 +501,27 @@ async function createOffer(targetUserId) {
         await peerConnection.setLocalDescription(offer);
 
         // Send offer to remote peer via signaling server
-        socket.emit('offer', {
-            offer: offer,
-            targetUserId: targetUserId,
-            roomId: currentRoomId
-        });
-
-        isCaller = true;
-        console.log('✅ Offer created and sent');
+        if (socket && socket.connected) {
+            socket.emit('offer', {
+                offer: offer,
+                targetUserId: targetUserId,
+                roomId: currentRoomId
+            });
+            isCaller = true;
+            console.log('✅ Offer created and sent');
+        } else {
+            throw new Error('Socket not connected');
+        }
 
     } catch (error) {
         console.error('❌ Error creating offer:', error);
-        showStatus('Failed to initiate call', 'error');
+        showStatus('Failed to initiate call. Retrying...', 'error');
+        // Retry after delay
+        setTimeout(() => {
+            if (localStream && targetUserId && socket && socket.connected) {
+                createOffer(targetUserId);
+            }
+        }, 2000);
     }
 }
 
@@ -347,6 +532,8 @@ async function handleOffer(offer, senderId) {
     try {
         console.log('📥 Handling offer from:', senderId);
         remoteUserId = senderId;
+        remoteUserName = userNames.get(senderId) || 'User';
+        updateNameOverlays();
         showStatus('Incoming call...', 'info');
 
         // Create peer connection if not exists
@@ -362,18 +549,19 @@ async function handleOffer(offer, senderId) {
         await peerConnection.setLocalDescription(answer);
 
         // Send answer back to caller
-        socket.emit('answer', {
-            answer: answer,
-            targetUserId: senderId,
-            roomId: currentRoomId
-        });
-
-        isCaller = false;
-        console.log('✅ Answer created and sent');
+        if (socket && socket.connected) {
+            socket.emit('answer', {
+                answer: answer,
+                targetUserId: senderId,
+                roomId: currentRoomId
+            });
+            isCaller = false;
+            console.log('✅ Answer created and sent');
+        }
 
     } catch (error) {
         console.error('❌ Error handling offer:', error);
-        showStatus('Failed to answer call', 'error');
+        showStatus('Failed to answer call. Retrying...', 'error');
     }
 }
 
@@ -387,7 +575,7 @@ async function handleAnswer(answer) {
         console.log('✅ Answer handled, connection established');
     } catch (error) {
         console.error('❌ Error handling answer:', error);
-        showStatus('Failed to establish connection', 'error');
+        showStatus('Failed to establish connection. Retrying...', 'error');
     }
 }
 
@@ -456,6 +644,9 @@ async function startCall(withVideo) {
             
             // Mute local video to prevent echo
             localVideo.muted = true;
+            
+            // Update name overlay
+            updateNameOverlays();
         } catch (mediaError) {
             console.error('❌ Failed to get user media:', mediaError);
             
@@ -526,14 +717,14 @@ function toggleMute() {
 }
 
 /**
- * End the current call
+ * Leave the call (user quits, but room stays active)
  */
 function endCall() {
-    console.log('📴 Ending call');
+    console.log('📴 Leaving call');
     
-    // Notify server about call end
-    if (socket && socket.connected && currentRoomId && remoteUserId) {
-        socket.emit('end-call', { roomId: currentRoomId, targetUserId: remoteUserId });
+    // Leave room - this will notify other users but room stays active
+    if (socket && socket.connected && currentRoomId) {
+        socket.emit('leave-room', { roomId: currentRoomId });
     }
 
     // Clean up connections and streams
@@ -567,6 +758,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Handle page unload - cleanup
     window.addEventListener('beforeunload', () => {
+        if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+        }
         endCall();
         if (socket) {
             socket.disconnect();

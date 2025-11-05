@@ -218,7 +218,41 @@ io.on('connection', (socket) => {
   });
 
   // ============================================
-  // Handle Call End
+  // Handle User Leaving Room (user quits, room stays active)
+  // ============================================
+  socket.on('leave-room', (data) => {
+    try {
+      const { roomId } = data || {};
+
+      if (roomId) {
+        // Leave the room
+        socket.leave(roomId);
+        
+        // Remove user from room tracking
+        if (rooms.has(roomId)) {
+          rooms.get(roomId).delete(socket.id);
+          
+          // Notify other users in the room that this user left
+          socket.to(roomId).emit('user-left', { userId: socket.id });
+          
+          // Clean up empty rooms
+          if (rooms.get(roomId).size === 0) {
+            rooms.delete(roomId);
+            console.log(`🗑️  Room ${roomId} cleaned up (empty)`);
+          }
+        }
+
+        console.log(`👋 User ${socket.id} left room: ${roomId}`);
+      }
+
+    } catch (error) {
+      console.error(`❌ Error handling leave-room: ${error.message}`);
+      socket.emit('error', { message: 'Failed to leave room', error: error.message });
+    }
+  });
+
+  // ============================================
+  // Handle Call End (kept for backward compatibility)
   // ============================================
   socket.on('end-call', (data) => {
     try {
