@@ -611,6 +611,17 @@ async function startCall(withVideo) {
 
         socket.emit('join-room', roomId);
         updateUI(true);
+        
+        // Update button states based on available media
+        if (!localStream || localStream.getAudioTracks().length === 0) {
+            muteBtn.disabled = true;
+            muteBtn.textContent = 'No Mic Available';
+        }
+        if (!localStream || localStream.getVideoTracks().length === 0) {
+            cameraBtn.disabled = true;
+            cameraBtn.textContent = 'No Camera Available';
+        }
+        
         showStatus(`Call started. Waiting for other user...`, 'info');
 
     } catch (error) {
