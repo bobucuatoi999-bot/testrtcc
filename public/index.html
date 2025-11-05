@@ -250,11 +250,10 @@
     <!-- Load Socket.io client library from the server -->
     <script src="/socket.io/socket.io.js"></script>
     
-    <!-- Load PeerJS library from CDN -->
-    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
-    
     <!-- Server configuration - Load config.js first -->
     <script src="config.js"></script>
+    
+    <!-- Note: Using native WebRTC API instead of PeerJS for better reliability -->
     
     <!-- Load our custom client-side JavaScript -->
     <script src="client.js"></script>

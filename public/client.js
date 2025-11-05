@@ -1,19 +1,20 @@
 // ============================================
 // WebRTC Client - Video and Voice Call Logic
-// Connects to Socket.io signaling server and uses PeerJS for peer connections
+// Uses native WebRTC API with Socket.io signaling
 // ============================================
 
 // ============================================
 // Global Variables
 // ============================================
-let socket = null;           // Socket.io connection
-let peer = null;             // PeerJS instance
-let localStream = null;      // Local media stream (camera/mic)
-let remoteStream = null;     // Remote media stream
-let currentCall = null;      // Current active call object
-let isMuted = false;         // Mute state
-let currentRoomId = null;    // Currently joined room ID
-let userName = null;         // User's name
+let socket = null;              // Socket.io connection
+let peerConnection = null;      // RTCPeerConnection instance
+let localStream = null;         // Local media stream (camera/mic)
+let remoteStream = null;        // Remote media stream
+let isMuted = false;            // Mute state
+let currentRoomId = null;       // Currently joined room ID
+let userName = null;            // User's name
+let remoteUserId = null;        // Currently connected user's socket ID
+let isCaller = false;           // Whether this user initiated the call
 
 // ============================================
 // Server Configuration
@@ -21,6 +22,15 @@ let userName = null;         // User's name
 // Get server URL from window.SERVER_URL (set in index.html or config)
 // Defaults to localhost for development
 const SERVER_URL = window.SERVER_URL || 'http://localhost:3000';
+
+// WebRTC Configuration with STUN servers
+const rtcConfig = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' }
+    ]
+};
 
 // Get DOM elements
 const localVideo = document.getElementById('localVideo');
@@ -81,6 +91,12 @@ function cleanup() {
         localStream = null;
     }
 
+    // Close peer connection
+    if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+    }
+
     // Clear video elements
     if (localVideo.srcObject) {
         localVideo.srcObject = null;
@@ -89,16 +105,12 @@ function cleanup() {
         remoteVideo.srcObject = null;
     }
 
-    // End current call if active
-    if (currentCall) {
-        currentCall.close();
-        currentCall = null;
-    }
-
-    // Reset remote stream
+    // Reset variables
     remoteStream = null;
+    remoteUserId = null;
     currentRoomId = null;
     isMuted = false;
+    isCaller = false;
     
     // Update UI
     updateUI(false);
@@ -159,10 +171,9 @@ function initializeSocket() {
     socket.on('room-users', (data) => {
         console.log('👥 Existing users in room:', data.users);
         if (data.users && data.users.length > 0) {
-            // Connect to existing users
-            data.users.forEach(userId => {
-                connectToNewUser(userId, localStream);
-            });
+            // Connect to the first existing user (1-on-1 call)
+            remoteUserId = data.users[0];
+            createOffer(data.users[0]);
         }
     });
 
@@ -171,20 +182,19 @@ function initializeSocket() {
         console.log('👋 New user joined:', data.userId);
         showStatus('New user joined the room', 'info');
         
-        // If we have a local stream, connect to the new user
-        if (localStream) {
-            connectToNewUser(data.userId, localStream);
+        // If we have a local stream, create offer to connect
+        if (localStream && !peerConnection) {
+            remoteUserId = data.userId;
+            createOffer(data.userId);
         }
     });
 
     // User left the room
     socket.on('user-left', (data) => {
         console.log('👋 User left:', data.userId);
-        showStatus('Other user left the call', 'info');
-        
-        // Clean up remote stream
-        if (remoteVideo.srcObject) {
-            remoteVideo.srcObject = null;
+        if (data.userId === remoteUserId) {
+            showStatus('Other user left the call', 'info');
+            cleanup();
         }
     });
 
@@ -195,6 +205,31 @@ function initializeSocket() {
         cleanup();
     });
 
+    // Receive WebRTC offer
+    socket.on('offer', async (data) => {
+        console.log('📥 Received offer from:', data.senderId);
+        remoteUserId = data.senderId;
+        await handleOffer(data.offer, data.senderId);
+    });
+
+    // Receive WebRTC answer
+    socket.on('answer', async (data) => {
+        console.log('📥 Received answer from:', data.senderId);
+        await handleAnswer(data.answer);
+    });
+
+    // Receive ICE candidate
+    socket.on('ice-candidate', async (data) => {
+        console.log('📥 Received ICE candidate from:', data.senderId);
+        if (peerConnection && data.candidate) {
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            } catch (error) {
+                console.error('❌ Error adding ICE candidate:', error);
+            }
+        }
+    });
+
     // Error from server
     socket.on('error', (error) => {
         console.error('❌ Server error:', error);
@@ -203,107 +238,157 @@ function initializeSocket() {
 }
 
 // ============================================
-// PeerJS Setup
+// WebRTC Peer Connection Functions
 // ============================================
 
 /**
- * Initialize PeerJS instance for peer-to-peer connections
+ * Create RTCPeerConnection and set up event handlers
  */
-function initializePeer() {
-    // Create PeerJS instance with STUN server for NAT traversal
-    // STUN servers help establish connections through firewalls/NAT
-    peer = new Peer({
-        config: {
-            iceServers: [
-                { 
-                    urls: 'stun:stun.l.google.com:19302' 
-                },
-                // Additional free STUN server as backup
-                { 
-                    urls: 'stun:stun1.l.google.com:19302' 
+function createPeerConnection() {
+    // Create peer connection with STUN servers
+    peerConnection = new RTCPeerConnection(rtcConfig);
+
+    // Add local stream tracks to peer connection
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, localStream);
+            console.log('✅ Added track:', track.kind);
+        });
+    }
+
+    // Handle ICE candidates - send to remote peer via signaling
+    peerConnection.onicecandidate = (event) => {
+        if (event.candidate && remoteUserId) {
+            console.log('📤 Sending ICE candidate');
+            socket.emit('ice-candidate', {
+                candidate: event.candidate,
+                targetUserId: remoteUserId,
+                roomId: currentRoomId
+            });
+        }
+    };
+
+    // Handle remote stream - when we receive media from remote peer
+    peerConnection.ontrack = (event) => {
+        console.log('✅ Received remote track:', event.track.kind);
+        remoteStream = event.streams[0];
+        remoteVideo.srcObject = remoteStream;
+        showStatus('Call connected!', 'success');
+        updateUI(true);
+    };
+
+    // Handle connection state changes
+    peerConnection.onconnectionstatechange = () => {
+        console.log('🔗 Connection state:', peerConnection.connectionState);
+        if (peerConnection.connectionState === 'failed') {
+            showStatus('Connection failed. Trying to reconnect...', 'error');
+            // Attempt to reconnect
+            if (localStream && remoteUserId) {
+                if (isCaller) {
+                    createOffer(remoteUserId);
                 }
-            ]
-        },
-        debug: 2 // Log level (0-3, higher = more verbose)
-    });
+            }
+        } else if (peerConnection.connectionState === 'connected') {
+            showStatus('Call connected!', 'success');
+        }
+    };
 
-    // ============================================
-    // PeerJS Event Handlers
-    // ============================================
+    // Handle ICE connection state
+    peerConnection.oniceconnectionstatechange = () => {
+        console.log('🧊 ICE connection state:', peerConnection.iceConnectionState);
+        if (peerConnection.iceConnectionState === 'failed') {
+            showStatus('Network connection failed', 'error');
+        }
+    };
+}
 
-    // PeerJS connection opened - we got our ID
-    peer.on('open', (id) => {
-        console.log('✅ PeerJS ready with ID:', id);
-        showStatus(`Peer ID: ${id}`, 'success');
-    });
+/**
+ * Create WebRTC offer (caller side)
+ */
+async function createOffer(targetUserId) {
+    try {
+        console.log('📞 Creating offer for:', targetUserId);
+        showStatus('Initiating call...', 'info');
 
-    // Error in PeerJS
-    peer.on('error', (error) => {
-        console.error('❌ PeerJS error:', error);
-        showStatus(`PeerJS error: ${error.message}`, 'error');
-    });
+        // Create peer connection if not exists
+        if (!peerConnection) {
+            createPeerConnection();
+        }
 
-    // Incoming call from another peer
-    peer.on('call', (call) => {
-        console.log('📞 Incoming call from:', call.peer);
+        // Create offer
+        const offer = await peerConnection.createOffer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true
+        });
+
+        // Set local description
+        await peerConnection.setLocalDescription(offer);
+
+        // Send offer to remote peer via signaling server
+        socket.emit('offer', {
+            offer: offer,
+            targetUserId: targetUserId,
+            roomId: currentRoomId
+        });
+
+        isCaller = true;
+        console.log('✅ Offer created and sent');
+
+    } catch (error) {
+        console.error('❌ Error creating offer:', error);
+        showStatus('Failed to initiate call', 'error');
+    }
+}
+
+/**
+ * Handle incoming WebRTC offer (callee side)
+ */
+async function handleOffer(offer, senderId) {
+    try {
+        console.log('📥 Handling offer from:', senderId);
+        remoteUserId = senderId;
         showStatus('Incoming call...', 'info');
 
-        // Get user media to answer the call
-        getUserMedia(true, true)
-            .then((stream) => {
-                // Answer the call with our stream
-                call.answer(stream);
-                
-                // Store the call object
-                currentCall = call;
-                
-                // Set up local video
-                if (localVideo.srcObject !== stream) {
-                    localVideo.srcObject = stream;
-                    localStream = stream;
-                }
-
-                // Handle remote stream when it arrives
-                call.on('stream', (remoteStream) => {
-                    console.log('✅ Received remote stream');
-                    remoteVideo.srcObject = remoteStream;
-                    showStatus('Call connected!', 'success');
-                    updateUI(true);
-                });
-
-                // Handle call close
-                call.on('close', () => {
-                    console.log('📴 Call closed');
-                    cleanup();
-                });
-
-                // Handle call error
-                call.on('error', (error) => {
-                    console.error('❌ Call error:', error);
-                    showStatus('Call error occurred', 'error');
-                    cleanup();
-                });
-            })
-            .catch((error) => {
-                console.error('❌ Failed to get media for incoming call:', error);
-                showStatus('Failed to answer call. Check camera/mic permissions.', 'error');
-            });
-    });
-
-    // PeerJS connection closed
-    peer.on('close', () => {
-        console.log('⚠️ PeerJS connection closed');
-        showStatus('Peer connection closed', 'error');
-    });
-
-    // PeerJS disconnected
-    peer.on('disconnected', () => {
-        console.log('⚠️ PeerJS disconnected');
-        // Attempt to reconnect
-        if (!peer.destroyed) {
-            peer.reconnect();
+        // Create peer connection if not exists
+        if (!peerConnection) {
+            createPeerConnection();
         }
-    });
+
+        // Set remote description
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+
+        // Create answer
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+
+        // Send answer back to caller
+        socket.emit('answer', {
+            answer: answer,
+            targetUserId: senderId,
+            roomId: currentRoomId
+        });
+
+        isCaller = false;
+        console.log('✅ Answer created and sent');
+
+    } catch (error) {
+        console.error('❌ Error handling offer:', error);
+        showStatus('Failed to answer call', 'error');
+    }
+}
+
+/**
+ * Handle incoming WebRTC answer (caller side)
+ */
+async function handleAnswer(answer) {
+    try {
+        console.log('📥 Handling answer');
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        console.log('✅ Answer handled, connection established');
+    } catch (error) {
+        console.error('❌ Error handling answer:', error);
+        showStatus('Failed to establish connection', 'error');
+    }
 }
 
 // ============================================
@@ -396,27 +481,12 @@ async function startCall(withVideo) {
             initializeSocket();
         }
 
-        // Wait a moment for socket to connect if needed
+        // Wait for socket to connect if needed
         if (!socket.connected) {
-            await new Promise((resolve) => {
-                socket.once('connect', resolve);
-                setTimeout(resolve, 3000); // Timeout after 3 seconds
-            });
-        }
-
-        // Initialize PeerJS if not already done
-        if (!peer || peer.destroyed) {
-            initializePeer();
-            
-            // Wait for PeerJS to be ready
             await new Promise((resolve, reject) => {
-                if (peer.open) {
-                    resolve();
-                } else {
-                    peer.once('open', resolve);
-                    peer.once('error', reject);
-                    setTimeout(() => reject(new Error('PeerJS initialization timeout')), 5000);
-                }
+                socket.once('connect', resolve);
+                socket.once('connect_error', reject);
+                setTimeout(() => reject(new Error('Connection timeout')), 5000);
             });
         }
 
@@ -432,56 +502,6 @@ async function startCall(withVideo) {
         console.error('❌ Error starting call:', error);
         showStatus(`Failed to start call: ${error.message}`, 'error');
         cleanup();
-    }
-}
-
-/**
- * Connect to a new user in the room
- * @param {string} userId - The PeerJS ID of the user to connect to
- * @param {MediaStream} stream - Our local media stream
- */
-function connectToNewUser(userId, stream) {
-    try {
-        console.log('🔗 Connecting to user:', userId);
-        showStatus('Connecting to user...', 'info');
-
-        // Make a call to the other user with our stream
-        const call = peer.call(userId, stream);
-        
-        if (!call) {
-            console.error('❌ Failed to create call');
-            showStatus('Failed to connect to user', 'error');
-            return;
-        }
-
-        // Store the call object
-        currentCall = call;
-
-        // Handle remote stream when it arrives
-        call.on('stream', (remoteStream) => {
-            console.log('✅ Received remote stream from:', userId);
-            remoteVideo.srcObject = remoteStream;
-            showStatus('Call connected!', 'success');
-            updateUI(true);
-        });
-
-        // Handle call close
-        call.on('close', () => {
-            console.log('📴 Call closed with:', userId);
-            if (remoteVideo.srcObject) {
-                remoteVideo.srcObject = null;
-            }
-        });
-
-        // Handle call error
-        call.on('error', (error) => {
-            console.error('❌ Call error:', error);
-            showStatus('Call error occurred', 'error');
-        });
-
-    } catch (error) {
-        console.error('❌ Error connecting to user:', error);
-        showStatus(`Failed to connect: ${error.message}`, 'error');
     }
 }
 
@@ -512,8 +532,8 @@ function endCall() {
     console.log('📴 Ending call');
     
     // Notify server about call end
-    if (socket && socket.connected && currentRoomId) {
-        socket.emit('end-call', { roomId: currentRoomId });
+    if (socket && socket.connected && currentRoomId && remoteUserId) {
+        socket.emit('end-call', { roomId: currentRoomId, targetUserId: remoteUserId });
     }
 
     // Clean up connections and streams
@@ -535,20 +555,21 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
     }
 
+    // Check for RTCPeerConnection support
+    if (!window.RTCPeerConnection) {
+        alert('Your browser does not support WebRTC. Please use a modern browser.');
+        showStatus('WebRTC not supported', 'error');
+        return;
+    }
+
     // Initialize Socket.io connection
     initializeSocket();
-
-    // Initialize PeerJS
-    initializePeer();
 
     // Handle page unload - cleanup
     window.addEventListener('beforeunload', () => {
         endCall();
         if (socket) {
             socket.disconnect();
-        }
-        if (peer && !peer.destroyed) {
-            peer.destroy();
         }
     });
 
@@ -567,4 +588,3 @@ document.addEventListener('DOMContentLoaded', () => {
     
     console.log('📱 Server URL:', SERVER_URL);
 });
-
