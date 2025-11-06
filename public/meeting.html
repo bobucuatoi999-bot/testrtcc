@@ -352,34 +352,65 @@
         
         // Load mediasoup-client first, then other scripts
         loadMediasoupClient(() => {
-            // Now load socket.io and config
-            const socketScript = document.createElement('script');
-            socketScript.src = '/socket.io/socket.io.js';
-            document.head.appendChild(socketScript);
-            
+            // Load config first (needed for SERVER_URL)
             const configScript = document.createElement('script');
             configScript.src = 'config.js';
-            document.head.appendChild(configScript);
-            
-            // Finally load our client script
-            const clientScript = document.createElement('script');
-            clientScript.src = 'client-mediasoup.js';
-            clientScript.onload = () => {
-                console.log('✅ client-mediasoup.js loaded');
+            configScript.onload = () => {
+                console.log('✅ config.js loaded');
+                
+                // Then load socket.io
+                const socketScript = document.createElement('script');
+                socketScript.src = '/socket.io/socket.io.js';
+                socketScript.onload = () => {
+                    console.log('✅ socket.io.js loaded');
+                    
+                    // Wait a bit for socket.io to be ready
+                    setTimeout(() => {
+                        // Finally load our client script
+                        const clientScript = document.createElement('script');
+                        clientScript.src = 'client-mediasoup.js';
+                        clientScript.onload = () => {
+                            console.log('✅ client-mediasoup.js loaded');
+                            // Wait a bit to ensure all functions are defined
+                            setTimeout(() => {
+                                // Trigger initialization if it hasn't happened yet
+                                if (typeof initializeMeeting === 'function') {
+                                    console.log('🚀 Calling initializeMeeting...');
+                                    initializeMeeting();
+                                } else {
+                                    console.warn('⚠️ initializeMeeting function not found, trying alternative...');
+                                    // Try alternative: check if DOMContentLoaded already fired
+                                    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                                        // Manually trigger initialization
+                                        const urlParams = new URLSearchParams(window.location.search);
+                                        const roomId = urlParams.get('room');
+                                        const name = urlParams.get('name');
+                                        const password = urlParams.get('password');
+                                        if (roomId && name && typeof joinRoom === 'function') {
+                                            console.log('🚀 Manually joining room...');
+                                            joinRoom(roomId, decodeURIComponent(name), password ? decodeURIComponent(password) : null);
+                                        }
+                                    }
+                                }
+                            }, 200);
+                        };
+                        clientScript.onerror = () => {
+                            console.error('❌ Failed to load client-mediasoup.js');
+                            alert('Failed to load client script. Please refresh the page.');
+                        };
+                        document.head.appendChild(clientScript);
+                    }, 100);
+                };
+                socketScript.onerror = () => {
+                    console.error('❌ Failed to load socket.io.js');
+                    alert('Failed to load Socket.io. Please refresh the page.');
+                };
+                document.head.appendChild(socketScript);
             };
-            clientScript.onerror = () => console.error('❌ Failed to load client-mediasoup.js');
-            document.head.appendChild(clientScript);
-        });
-    </script>
-    
-    <script>
-        // Initialize meeting from URL parameters
-        // Note: The actual initialization happens in client-mediasoup.js
-        // This script just ensures the page doesn't redirect immediately
-        window.addEventListener('DOMContentLoaded', () => {
-            console.log('📄 Meeting page loaded, waiting for client-mediasoup.js to initialize...');
-            // The client-mediasoup.js will handle the actual room joining
-            // No need for additional initialization here
+            configScript.onerror = () => {
+                console.error('❌ Failed to load config.js');
+            };
+            document.head.appendChild(configScript);
         });
     </script>
 </body>

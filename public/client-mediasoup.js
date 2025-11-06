@@ -1004,22 +1004,49 @@ function updateScreenShareButton() {
  * Join a room
  */
 function joinRoom(roomId, name, password = null) {
+    console.log('🚪 Joining room:', { roomId, name, hasPassword: !!password });
     currentRoomId = roomId;
     userName = name;
     pendingPassword = password;
+
+    // Check if socket.io is loaded
+    if (typeof io === 'undefined') {
+        console.error('❌ Socket.io not loaded yet, waiting...');
+        setTimeout(() => {
+            if (typeof io !== 'undefined') {
+                joinRoom(roomId, name, password);
+            } else {
+                showStatus('Failed to load Socket.io. Please refresh the page.', 'error');
+            }
+        }, 500);
+        return;
+    }
 
     // Initialize socket
     initializeSocket();
 
     // Wait for socket to connect, then join room
-    if (socket) {
+    // Check if socket is already connected
+    if (socket && socket.connected) {
+        console.log('✅ Socket already connected, joining room immediately');
+        socket.emit('join-room', {
+            roomId: roomId,
+            userName: name,
+            password: password || ''
+        });
+    } else if (socket) {
+        console.log('⏳ Waiting for socket to connect...');
         socket.once('connect', () => {
+            console.log('✅ Socket connected, joining room...');
             socket.emit('join-room', {
                 roomId: roomId,
                 userName: name,
                 password: password || ''
             });
         });
+    } else {
+        console.error('❌ Socket not initialized');
+        showStatus('Failed to initialize connection', 'error');
     }
 }
 
@@ -1184,7 +1211,13 @@ function closeZoomView() {
 // Initialize on Page Load
 // ============================================
 
-window.addEventListener('DOMContentLoaded', () => {
+/**
+ * Initialize the meeting - called after script loads
+ */
+function initializeMeeting() {
+    console.log('🚀 Initializing meeting...');
+    
+    // Initialize DOM elements
     initializeDOMElements();
     
     // Initialize draggable meeting ID
@@ -1200,13 +1233,23 @@ window.addEventListener('DOMContentLoaded', () => {
     const password = urlParams.get('password');
 
     if (roomId && name) {
+        console.log('📋 Room params found:', { roomId, name, hasPassword: !!password });
         // Auto-join room
         joinRoom(roomId, decodeURIComponent(name), password ? decodeURIComponent(password) : null);
     } else {
+        console.warn('⚠️ Missing room params, redirecting to home');
         // Redirect to home if missing params
         window.location.href = 'index.html';
     }
-});
+}
+
+// Try to initialize immediately if DOM is ready, otherwise wait
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeMeeting);
+} else {
+    // DOM is already ready, initialize immediately
+    initializeMeeting();
+}
 
 // ============================================
 // UI Helper Functions
