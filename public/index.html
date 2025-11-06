@@ -555,8 +555,8 @@
             const passwordInput = document.getElementById('roomPasswordInput');
             const password = passwordInput ? passwordInput.value.trim() : '';
             
-            // Navigate to meeting page with params
-            let url = `meeting.html?room=${roomId}&name=${encodeURIComponent(name)}&video=true`;
+            // Navigate to meeting page with params (using Jitsi)
+            let url = `meeting-jitsi.html?room=${roomId}&name=${encodeURIComponent(name)}`;
             if (password) {
                 url += `&password=${encodeURIComponent(password)}`;
             }
@@ -576,7 +576,7 @@
                 return;
             }
             
-            window.location.href = `meeting.html?room=${roomId}&name=${encodeURIComponent(name)}&video=true`;
+            window.location.href = `meeting-jitsi.html?room=${roomId}&name=${encodeURIComponent(name)}`;
         }
 
         function showStatus(message, type = 'info') {
