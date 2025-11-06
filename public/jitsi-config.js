@@ -11,8 +11,11 @@ const jitsiConfig = {
     startWithAudioMuted: false,
     startWithVideoMuted: false,
     
+    // Allow joining without devices (users can enable later)
+    startAudioOnly: false,
+    
     // UI settings
-    prejoinPageEnabled: false, // We handle pre-join ourselves
+    prejoinPageEnabled: true, // Enable prejoin to allow device setup and permissions
     
     // Quality settings
     resolution: 720,

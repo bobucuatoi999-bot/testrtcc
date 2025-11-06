@@ -64,7 +64,11 @@ function initializeSocket() {
             if (currentRoomId && userName) {
                 // Small delay to ensure UI is ready
                 setTimeout(() => {
-                    initializeJitsi();
+                    initializeJitsi().catch(error => {
+                        console.error('❌ Error initializing Jitsi:', error);
+                        showLoading(false);
+                        showStatus('Failed to start meeting. Please refresh and try again.', 'error');
+                    });
                 }, 500);
             }
         });
@@ -161,9 +165,67 @@ function initializeSocket() {
 // ============================================
 
 /**
+ * Check and request device permissions before initializing Jitsi
+ * @returns {Promise<boolean>} True if permissions granted or devices available
+ */
+async function checkDevicePermissions() {
+    try {
+        // Check if mediaDevices API is available
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            console.warn('⚠️ MediaDevices API not available');
+            // Still allow joining - Jitsi will handle device errors
+            return true;
+        }
+
+        // Try to enumerate devices first (doesn't require permission)
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const hasVideoDevice = devices.some(device => device.kind === 'videoinput');
+        const hasAudioDevice = devices.some(device => device.kind === 'audioinput');
+
+        if (!hasVideoDevice && !hasAudioDevice) {
+            console.warn('⚠️ No camera or microphone devices found');
+            // Still allow joining - user can join without devices
+            return true;
+        }
+
+        // Try to get permissions (this will prompt user)
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: hasAudioDevice,
+                video: hasVideoDevice
+            });
+            
+            // Stop tracks immediately - we just needed permission
+            stream.getTracks().forEach(track => track.stop());
+            
+            console.log('✅ Device permissions granted');
+            return true;
+        } catch (error) {
+            if (error.name === 'NotAllowedError') {
+                console.warn('⚠️ Device permissions denied - user can still join');
+                // Allow joining without devices
+                return true;
+            } else if (error.name === 'NotFoundError') {
+                console.warn('⚠️ No devices found - user can still join');
+                // Allow joining without devices
+                return true;
+            } else {
+                console.warn('⚠️ Device access error:', error.name);
+                // Still allow joining
+                return true;
+            }
+        }
+    } catch (error) {
+        console.error('❌ Error checking device permissions:', error);
+        // Allow joining anyway - Jitsi will handle it
+        return true;
+    }
+}
+
+/**
  * Initialize Jitsi Meet meeting
  */
-function initializeJitsi() {
+async function initializeJitsi() {
     if (!currentRoomId || !userName) {
         console.error('❌ Cannot initialize Jitsi: missing room ID or user name');
         return;
@@ -173,6 +235,7 @@ function initializeJitsi() {
     if (typeof JitsiMeetExternalAPI === 'undefined') {
         console.error('❌ Jitsi Meet External API not loaded');
         showStatus('Failed to load video meeting. Please refresh the page.', 'error');
+        showLoading(false);
         return;
     }
 
@@ -182,8 +245,20 @@ function initializeJitsi() {
         jitsiAPI = null;
     }
 
-    // Show loading
+    // Show loading with device check message
     showLoading(true);
+    const loadingMessage = document.querySelector('#loading p');
+    if (loadingMessage) {
+        loadingMessage.textContent = 'Checking devices...';
+    }
+
+    // Check device permissions (non-blocking)
+    await checkDevicePermissions();
+
+    // Update loading message
+    if (loadingMessage) {
+        loadingMessage.textContent = 'Connecting to meeting...';
+    }
 
     try {
         // Create Jitsi room name (sanitize for Jitsi)
@@ -220,6 +295,15 @@ function initializeJitsi() {
 
         console.log('✅ Jitsi Meet initialized for room:', jitsiRoomName);
 
+        // Set a timeout to update loading message if meeting takes too long
+        setTimeout(() => {
+            const loading = document.getElementById('loading');
+            if (loading && loading.style.display !== 'none') {
+                console.warn('⚠️ Meeting taking longer than expected to load');
+                updateLoadingMessage('Meeting is loading... If this persists, please refresh.');
+            }
+        }, 30000);
+
     } catch (error) {
         console.error('❌ Error initializing Jitsi:', error);
         showStatus('Failed to start video meeting. Please try again.', 'error');
@@ -240,9 +324,13 @@ function setupJitsiEventListeners() {
         showStatus('Connected to meeting', 'success');
         
         // Get participant count from Jitsi
-        const participants = jitsiAPI.getParticipantsInfo();
-        participantCount = participants.length + 1; // +1 for local user
-        updateParticipantsCount();
+        try {
+            const participants = jitsiAPI.getParticipantsInfo();
+            participantCount = participants.length + 1; // +1 for local user
+            updateParticipantsCount();
+        } catch (error) {
+            console.warn('⚠️ Could not get participants info:', error);
+        }
         
         // Request room users from server to sync
         if (socket && socket.connected && currentRoomId) {
@@ -307,10 +395,14 @@ function setupJitsiEventListeners() {
     jitsiAPI.addEventListener('errorOccurred', (error) => {
         console.error('❌ Jitsi error:', error);
         
-        if (error.error === 'camera-permission-denied') {
-            showStatus('Camera permission denied. Please allow camera access.', 'error');
+        // Don't block meeting if it's just device errors - user can still join
+        if (error.error === 'camera-permission-denied' || error.error === 'gum.not_found') {
+            console.warn('⚠️ Device access issue - user can still join without camera/mic');
+            showStatus('You can still join the meeting. Camera/microphone may not be available.', 'info');
+            // Don't hide loading - let meeting continue
         } else if (error.error === 'mic-permission-denied') {
-            showStatus('Microphone permission denied. Please allow microphone access.', 'error');
+            console.warn('⚠️ Microphone permission denied - user can still join');
+            showStatus('You can still join the meeting. Microphone may not be available.', 'info');
         } else {
             showStatus('An error occurred in the meeting. ' + (error.error || ''), 'error');
         }
@@ -739,6 +831,16 @@ function showLoading(show) {
     const loading = document.getElementById('loading');
     if (loading) {
         loading.style.display = show ? 'flex' : 'none';
+    }
+}
+
+/**
+ * Update loading message
+ */
+function updateLoadingMessage(message) {
+    const loadingMessage = document.querySelector('#loading p');
+    if (loadingMessage) {
+        loadingMessage.textContent = message;
     }
 }
 
