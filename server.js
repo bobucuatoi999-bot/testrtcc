@@ -38,6 +38,20 @@ const userNames = new Map();
 // Format: { socketId: peerId }
 const peerIds = new Map();
 
+// Store chat messages per room
+// Format: { roomId: [{ id, userName, message, timestamp, socketId }] }
+const roomMessages = new Map();
+
+// Store user message counts for rate limiting
+// Format: { socketId: { count, resetTime } }
+const userMessageCounts = new Map();
+
+// Chat configuration
+const MAX_MESSAGES_PER_ROOM = 100;        // Maximum messages per room (FIFO cleanup)
+const MAX_MESSAGE_LENGTH = 500;           // Maximum characters per message
+const MAX_MESSAGES_PER_MINUTE = 10;       // Rate limit per user
+const RATE_LIMIT_WINDOW = 60000;          // 1 minute in milliseconds
+
 // Maximum users per room
 const MAX_USERS_PER_ROOM = 7;
 
@@ -149,10 +163,138 @@ io.on('connection', (socket) => {
         userCount: roomUserCount,
         maxUsers: MAX_USERS_PER_ROOM
       });
+
+      // Send chat history to the new user
+      if (roomMessages.has(roomId)) {
+        const messages = roomMessages.get(roomId);
+        if (messages && messages.length > 0) {
+          socket.emit('chat-history', {
+            roomId: roomId,
+            messages: messages
+          });
+          console.log(`💬 Sent ${messages.length} chat message(s) to user ${socket.id} in room ${roomId}`);
+        }
+      }
       
     } catch (error) {
       console.error(`❌ Error joining room: ${error.message}`);
       socket.emit('error', { message: 'Failed to join room', error: error.message });
+    }
+  });
+
+  // ============================================
+  // Handle Chat Messages
+  // ============================================
+  socket.on('chat-message', (data) => {
+    try {
+      const { roomId, message } = data || {};
+
+      // Validate inputs
+      if (!roomId || typeof roomId !== 'string') {
+        socket.emit('error', { message: 'Invalid room ID' });
+        return;
+      }
+
+      if (!message || typeof message !== 'string') {
+        socket.emit('error', { message: 'Invalid message' });
+        return;
+      }
+
+      // Validate user is in the room
+      if (!rooms.has(roomId) || !rooms.get(roomId).has(socket.id)) {
+        socket.emit('error', { message: 'You are not in this room' });
+        console.log(`❌ User ${socket.id} tried to send message to room ${roomId} but not in room`);
+        return;
+      }
+
+      // Validate message length
+      const trimmedMessage = message.trim();
+      if (trimmedMessage.length === 0) {
+        socket.emit('error', { message: 'Message cannot be empty' });
+        return;
+      }
+
+      if (trimmedMessage.length > MAX_MESSAGE_LENGTH) {
+        socket.emit('error', { 
+          message: `Message too long. Maximum ${MAX_MESSAGE_LENGTH} characters allowed.` 
+        });
+        return;
+      }
+
+      // Rate limiting check
+      const now = Date.now();
+      const userRateLimit = userMessageCounts.get(socket.id);
+      
+      if (userRateLimit) {
+        // Reset counter if window expired
+        if (now - userRateLimit.resetTime > RATE_LIMIT_WINDOW) {
+          userRateLimit.count = 0;
+          userRateLimit.resetTime = now;
+        }
+
+        // Check if user exceeded rate limit
+        if (userRateLimit.count >= MAX_MESSAGES_PER_MINUTE) {
+          socket.emit('error', { 
+            message: `Rate limit exceeded. Maximum ${MAX_MESSAGES_PER_MINUTE} messages per minute.` 
+          });
+          console.log(`⚠️  User ${socket.id} exceeded rate limit in room ${roomId}`);
+          return;
+        }
+
+        // Increment counter
+        userRateLimit.count++;
+      } else {
+        // Initialize rate limit tracking
+        userMessageCounts.set(socket.id, {
+          count: 1,
+          resetTime: now
+        });
+      }
+
+      // Sanitize message (prevent XSS) - optimized single-pass replacement
+      const sanitizedMessage = trimmedMessage.replace(/[<>"'/]/g, (char) => {
+        const map = { '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#x27;', '/': '&#x2F;' };
+        return map[char];
+      });
+
+      // Get user name
+      const senderName = userNames.get(socket.id) || 'User';
+
+      // Create message object
+      const messageObj = {
+        id: `${socket.id}-${now}-${Math.random().toString(36).substr(2, 9)}`,
+        userName: senderName,
+        message: sanitizedMessage,
+        timestamp: now,
+        socketId: socket.id
+      };
+
+      // Initialize room messages array if needed
+      if (!roomMessages.has(roomId)) {
+        roomMessages.set(roomId, []);
+      }
+
+      const roomMessagesArray = roomMessages.get(roomId);
+
+      // Enforce message limit per room (FIFO - remove oldest if limit reached)
+      if (roomMessagesArray.length >= MAX_MESSAGES_PER_ROOM) {
+        roomMessagesArray.shift(); // Remove oldest message
+      }
+
+      // Add new message
+      roomMessagesArray.push(messageObj);
+
+      // Broadcast message to all users in the room (including sender for consistency)
+      io.to(roomId).emit('chat-message', messageObj);
+
+      // Only log in development to reduce I/O overhead in production
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`💬 User ${socket.id} (${senderName}) sent message in room ${roomId}`);
+      }
+
+    } catch (error) {
+      console.error(`❌ Error handling chat message: ${error.message}`);
+      socket.emit('error', { message: 'Failed to send message', error: error.message });
     }
   });
 
@@ -254,6 +396,11 @@ io.on('connection', (socket) => {
           });
           
           if (rooms.get(roomId).size === 0) {
+            // Auto-delete all chat messages when room becomes empty
+            if (roomMessages.has(roomId)) {
+              roomMessages.delete(roomId);
+              console.log(`🗑️  Chat messages deleted for empty room ${roomId}`);
+            }
             rooms.delete(roomId);
             console.log(`🗑️  Room ${roomId} cleaned up (empty)`);
           }
@@ -276,6 +423,9 @@ io.on('connection', (socket) => {
     // Remove user name and PeerJS ID
     userNames.delete(socket.id);
     peerIds.delete(socket.id);
+    
+    // Clean up rate limiting data
+    userMessageCounts.delete(socket.id);
 
     // Remove user from all rooms
     rooms.forEach((users, roomId) => {
@@ -299,6 +449,11 @@ io.on('connection', (socket) => {
 
         // Clean up empty rooms
         if (users.size === 0) {
+          // Auto-delete all chat messages when room becomes empty
+          if (roomMessages.has(roomId)) {
+            roomMessages.delete(roomId);
+            console.log(`🗑️  Chat messages deleted for empty room ${roomId}`);
+          }
           rooms.delete(roomId);
           console.log(`🗑️  Room ${roomId} cleaned up (empty)`);
         }

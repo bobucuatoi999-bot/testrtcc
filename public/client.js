@@ -311,30 +311,56 @@ function toggleParticipants() {
 }
 
 /**
- * Send chat message
+ * Display a chat message in the chat panel
+ * @param {Object} messageData - Message object with { id, userName, message, timestamp, socketId }
+ * @param {boolean} isOwnMessage - Whether this is the current user's message
+ */
+function displayChatMessage(messageData, isOwnMessage = false) {
+    const chatMessages = document.getElementById('chatMessages');
+    if (!chatMessages || !messageData) return;
+
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `chat-message ${isOwnMessage ? 'chat-message-own' : ''}`;
+    messageDiv.dataset.messageId = messageData.id;
+
+    const time = new Date(messageData.timestamp);
+    const timeString = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    messageDiv.innerHTML = `
+        <div class="chat-message-header">
+            <span class="chat-message-sender">${isOwnMessage ? 'You' : (messageData.userName || 'User')}</span>
+            <span class="chat-message-time">${timeString}</span>
+        </div>
+        <div class="chat-message-text">${messageData.message}</div>
+    `;
+
+    chatMessages.appendChild(messageDiv);
+    
+    // Auto-scroll to bottom
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+/**
+ * Send chat message to server
  */
 function sendChatMessage() {
     const chatInput = document.getElementById('chatInput');
-    const chatMessages = document.getElementById('chatMessages');
-    if (!chatInput || !chatMessages) return;
+    if (!chatInput || !socket || !currentRoomId) return;
     
     const message = chatInput.value.trim();
     if (!message) return;
-    
-    // Add message to chat (in a real app, this would be sent via socket)
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'chat-message';
-    messageDiv.innerHTML = `
-        <div class="chat-message-header">
-            <span class="chat-message-sender">${userName || 'You'}</span>
-            <span class="chat-message-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-        </div>
-        <div class="chat-message-text">${message}</div>
-    `;
-    chatMessages.appendChild(messageDiv);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-    
+
+    // Emit message to server
+    socket.emit('chat-message', {
+        roomId: currentRoomId,
+        message: message
+    });
+
+    // Clear input immediately (optimistic UI update)
     chatInput.value = '';
+    
+    // Note: Message will be displayed when server broadcasts it back
+    // This ensures consistency across all clients
 }
 
 /**
@@ -419,6 +445,12 @@ function cleanup() {
     isMuted = false;
     isCameraOff = false;
     isSharingScreen = false;
+
+    // Clear chat messages
+    const chatMessages = document.getElementById('chatMessages');
+    if (chatMessages) {
+        chatMessages.innerHTML = '';
+    }
 
     // Leave room on server
     if (socket && socket.connected && currentRoomId) {
@@ -593,10 +625,54 @@ function initializeSocket() {
             }
         });
 
+        // Handle chat messages
+        socket.on('chat-message', (messageData) => {
+            if (!messageData) return;
+            
+            // Check if this is our own message
+            const isOwnMessage = messageData.socketId === socket.id;
+            
+            // Display the message
+            displayChatMessage(messageData, isOwnMessage);
+        });
+
+        // Handle chat history (when joining a room with existing messages)
+        socket.on('chat-history', (data) => {
+            if (!data || !data.messages || !Array.isArray(data.messages)) return;
+            
+            const chatMessages = document.getElementById('chatMessages');
+            if (!chatMessages) return;
+
+            // Clear existing messages
+            chatMessages.innerHTML = '';
+
+            // Display all messages
+            data.messages.forEach(messageData => {
+                const isOwnMessage = messageData.socketId === socket.id;
+                displayChatMessage(messageData, isOwnMessage);
+            });
+
+            console.log(`💬 Loaded ${data.messages.length} chat message(s) from history`);
+        });
+
         // Handle errors
         socket.on('error', (error) => {
             console.error('❌ Server error:', error);
-            showStatus(error.message || 'Server error occurred', 'error');
+            
+            // Show error message but don't interrupt chat if it's a rate limit error
+            if (error.message && error.message.includes('Rate limit')) {
+                // Show temporary error in chat input area
+                const chatInput = document.getElementById('chatInput');
+                if (chatInput) {
+                    const originalPlaceholder = chatInput.placeholder;
+                    chatInput.placeholder = error.message;
+                    setTimeout(() => {
+                        chatInput.placeholder = originalPlaceholder;
+                    }, 3000);
+                }
+            } else {
+                showStatus(error.message || 'Server error occurred', 'error');
+            }
         });
 
     } catch (error) {
