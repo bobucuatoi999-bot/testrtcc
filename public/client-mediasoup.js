@@ -742,8 +742,8 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
 
             const remoteUser = remoteConsumers.get(socketId);
 
-                // Store consumer based on kind
-                if (kind === 'audio') {
+            // Store consumer based on kind
+            if (kind === 'audio') {
                     // Close existing audio consumer if any
                     if (remoteUser.audioConsumer) {
                         try {
