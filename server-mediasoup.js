@@ -110,21 +110,21 @@ function getIceServers() {
         urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']
       },
       // OpenRelay TURN servers (free, no auth required)
-      // UDP transport (fastest, preferred) - transport is implicit in URL
+      // UDP transport (fastest, preferred)
       {
         urls: 'turn:openrelay.metered.ca:80?transport=udp',
         username: 'openrelayproject',
         credential: 'openrelayproject'
       },
-      // TCP transport (fallback for restrictive networks) - transport must be in URL
+      // TCP transport (fallback for restrictive networks)
       {
         urls: 'turn:openrelay.metered.ca:443?transport=tcp',
         username: 'openrelayproject',
         credential: 'openrelayproject'
       },
-      // TLS transport (most reliable, works through most firewalls)
+      // Additional TURN server for redundancy (UDP)
       {
-        urls: 'turn:openrelay.metered.ca:443?transport=tls',
+        urls: 'turn:openrelay.metered.ca:80',
         username: 'openrelayproject',
         credential: 'openrelayproject'
       }

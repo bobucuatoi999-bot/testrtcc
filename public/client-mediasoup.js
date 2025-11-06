@@ -207,9 +207,28 @@ function initializeSocket() {
 
                 // Extract ICE servers array from the server response
                 // Server sends: { iceServers: [...], iceCandidatePoolSize: 10 }
-                const iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
+                let iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
+                
+                // Validate and clean ICE servers format
+                // Remove any servers with invalid transport types (TLS is not supported)
+                iceServersArray = iceServersArray.filter(server => {
+                    if (server.urls) {
+                        const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+                        // Check if any URL has invalid transport
+                        const hasInvalidTransport = urls.some(url => {
+                            if (typeof url === 'string') {
+                                // Remove TLS transport (not supported by RTCPeerConnection)
+                                return url.includes('transport=tls') || url.includes('transport=TLS');
+                            }
+                            return false;
+                        });
+                        return !hasInvalidTransport;
+                    }
+                    return true;
+                });
                 
                 console.log('📡 Creating send transport with ICE servers:', iceServersArray.length, 'servers');
+                console.log('📡 ICE servers:', JSON.stringify(iceServersArray, null, 2));
 
                 // Create send transport
                 sendTransport = device.createSendTransport({
@@ -294,7 +313,22 @@ function initializeSocket() {
                 }
 
                 // Extract ICE servers array from the server response
-                const iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
+                let iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
+                
+                // Validate and clean ICE servers format (same as send transport)
+                iceServersArray = iceServersArray.filter(server => {
+                    if (server.urls) {
+                        const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+                        const hasInvalidTransport = urls.some(url => {
+                            if (typeof url === 'string') {
+                                return url.includes('transport=tls') || url.includes('transport=TLS');
+                            }
+                            return false;
+                        });
+                        return !hasInvalidTransport;
+                    }
+                    return true;
+                });
                 
                 console.log('📡 Creating recv transport with ICE servers:', iceServersArray.length, 'servers');
 
