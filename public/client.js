@@ -56,6 +56,8 @@ const rtcConfig = {
 // ============================================
 const localVideo = document.getElementById('localVideo');
 const remoteVideo = document.getElementById('remoteVideo');
+let localVideoLabel = null;
+let remoteVideoLabel = null;
 const nameInput = document.getElementById('nameInput');
 const roomIdInput = document.getElementById('roomIdInput');
 const startVideoBtn = document.getElementById('startVideoBtn');
@@ -104,7 +106,50 @@ function updateUI(inCall) {
 }
 
 /**
- * Clean up all media streams and connections
+ * Update video labels with user names
+ * @param {string} localName - Local user's name
+ * @param {string} remoteName - Remote user's name (optional)
+ */
+function updateVideoLabels(localName, remoteName = null) {
+    if (localVideoLabel && localName) {
+        localVideoLabel.textContent = localName || 'Your Video';
+    }
+    if (remoteVideoLabel) {
+        if (remoteName) {
+            remoteVideoLabel.textContent = remoteName;
+        } else {
+            remoteVideoLabel.textContent = 'Waiting for user...';
+        }
+    }
+}
+
+/**
+ * Clean up remote connection only (user stays in room)
+ */
+function cleanupRemote() {
+    // Close current call
+    if (currentCall) {
+        currentCall.close();
+        currentCall = null;
+    }
+
+    // Clear remote video
+    if (remoteVideo.srcObject) {
+        remoteVideo.srcObject = null;
+    }
+
+    // Reset remote state
+    remoteStream = null;
+    remotePeerId = null;
+    remoteUserName = null;
+    iceCandidateQueue = [];
+
+    // Update video labels
+    updateVideoLabels(userName, null);
+}
+
+/**
+ * Clean up all media streams and connections (full cleanup)
  */
 function cleanup() {
     // Stop local stream tracks
@@ -161,6 +206,11 @@ function cleanup() {
         socket.emit('leave-room', { roomId: currentRoomId });
     }
 
+    // Reset video labels
+    updateVideoLabels(null, null);
+    if (localVideoLabel) localVideoLabel.textContent = 'Your Video';
+    if (remoteVideoLabel) remoteVideoLabel.textContent = 'Remote Video';
+
     updateUI(false);
     showStatus('Call ended. Ready for new call.', 'info');
 }
@@ -208,7 +258,9 @@ function initializeSocket() {
             if (data.users.length > 0) {
                 // Another user is already in the room - wait for their PeerJS ID
                 const otherUser = data.users[0];
-                remoteUserName = otherUser.userName;
+                remoteUserName = otherUser.userName || 'User';
+                // Update remote video label
+                updateVideoLabels(userName, remoteUserName);
                 // They will send their peer-id via socket
             }
         });
@@ -217,6 +269,8 @@ function initializeSocket() {
         socket.on('user-joined', (data) => {
             console.log('👤 New user joined:', data.userId);
             remoteUserName = data.userName || 'User';
+            // Update remote video label
+            updateVideoLabels(userName, remoteUserName);
             // Wait for them to send their PeerJS ID
         });
 
@@ -225,6 +279,10 @@ function initializeSocket() {
             console.log('🔑 Received PeerJS ID:', data.peerId);
             if (data.peerId && myPeerId) {
                 remotePeerId = data.peerId;
+                // Update remote video label if we have the user name
+                if (remoteUserName) {
+                    updateVideoLabels(userName, remoteUserName);
+                }
                 // Wait a bit for both peers to be ready, then connect
                 setTimeout(() => {
                     connectToUser(data.peerId);
@@ -235,9 +293,10 @@ function initializeSocket() {
         // Handle user leaving
         socket.on('user-left', (data) => {
             console.log('👋 User left:', data.userId);
-            if (remotePeerId) {
-                showStatus('Other user left. Waiting for new user...', 'info');
-                cleanup();
+            if (remotePeerId === data.userId || remotePeerId) {
+                showStatus('Other user left. You can stay and wait for a new user to join...', 'info');
+                // Only cleanup remote connection, keep user in room
+                cleanupRemote();
             }
         });
 
@@ -245,8 +304,9 @@ function initializeSocket() {
         // Handle call ended
         socket.on('call-ended', (data) => {
             console.log('📴 Call ended by other user');
-            showStatus('Other user ended the call', 'info');
-            cleanup();
+            showStatus('Other user ended the call. You can stay and wait for a new user...', 'info');
+            // Only cleanup remote connection, keep user in room
+            cleanupRemote();
         });
 
         // Handle errors
@@ -327,6 +387,8 @@ function initializePeer() {
                 console.log('✅ Received remote stream');
                 remoteStream = stream;
                 remoteVideo.srcObject = stream;
+                // Update remote video label with user name
+                updateVideoLabels(userName, remoteUserName || 'User');
                 showStatus('Call connected!', 'success');
                 updateUI(true);
             });
@@ -334,8 +396,13 @@ function initializePeer() {
             // Handle call close
             call.on('close', () => {
                 console.log('📴 Call closed');
-                showStatus('Call ended', 'info');
-                cleanup();
+                // Only cleanup remote if we're still in a room (user might want to stay)
+                if (currentRoomId) {
+                    showStatus('Call ended. Waiting for new user...', 'info');
+                    cleanupRemote();
+                } else {
+                    cleanup();
+                }
             });
 
             // Handle call error
@@ -521,6 +588,9 @@ async function startCall(withVideo) {
             userName: userName
         });
 
+        // Update local video label with user name
+        updateVideoLabels(userName, null);
+
         showStatus('Joining room...', 'info');
         
         // Wait for PeerJS to be ready and send peer ID
@@ -587,6 +657,8 @@ async function connectToUser(peerId) {
             console.log('✅ Received remote stream');
             remoteStream = stream;
             remoteVideo.srcObject = stream;
+            // Update remote video label with user name
+            updateVideoLabels(userName, remoteUserName || 'User');
             showStatus('Call connected!', 'success');
             updateUI(true);
         });
@@ -595,8 +667,13 @@ async function connectToUser(peerId) {
         call.on('close', () => {
             console.log('📴 Call closed');
             if (currentCall === call) {
-                showStatus('Call ended', 'info');
-                cleanup();
+                // Only cleanup remote if we're still in a room (user might want to stay)
+                if (currentRoomId) {
+                    showStatus('Call ended. Waiting for new user...', 'info');
+                    cleanupRemote();
+                } else {
+                    cleanup();
+                }
             }
         });
 
@@ -800,6 +877,13 @@ function endCall() {
 // Initialize when page loads
 window.addEventListener('DOMContentLoaded', () => {
     console.log('✅ Page loaded, initializing...');
+    
+    // Initialize video label references
+    const videoWrappers = document.querySelectorAll('.video-wrapper');
+    if (videoWrappers.length >= 2) {
+        localVideoLabel = videoWrappers[0].querySelector('.video-label');
+        remoteVideoLabel = videoWrappers[1].querySelector('.video-label');
+    }
     
     // Initialize socket connection
     initializeSocket();
