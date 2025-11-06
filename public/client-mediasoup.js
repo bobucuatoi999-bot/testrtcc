@@ -500,6 +500,9 @@ async function startProducingLocalMedia() {
         }
 
         // Get user media (camera and microphone)
+        console.log('🎥 Requesting camera and microphone permissions...');
+        showStatus('Requesting camera and microphone access...', 'info');
+        
         try {
             localStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
@@ -513,6 +516,10 @@ async function startProducingLocalMedia() {
                     frameRate: { ideal: 30, max: 30 }
                 }
             });
+            
+            console.log('✅ Camera and microphone access granted');
+            console.log('📹 Video tracks:', localStream.getVideoTracks().length);
+            console.log('🎤 Audio tracks:', localStream.getAudioTracks().length);
 
             // Produce audio
             const audioTrack = localStream.getAudioTracks()[0];
