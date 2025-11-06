@@ -31,6 +31,15 @@ let zoomedVideoWrapper = null;
 // Maximum users per room
 const MAX_USERS = 7;
 
+// Connection timeout constants (in milliseconds)
+const CONNECTION_TIMEOUTS = {
+    PEER_INIT: 10000,        // 10 seconds for PeerJS initialization
+    STREAM_LOAD: 15000,      // 15 seconds for stream to load
+    CALL_CONNECT: 20000,     // 20 seconds for call to connect
+    RETRY_DELAY: 2000,       // Initial retry delay
+    MAX_RETRIES: 5           // Maximum retry attempts
+};
+
 // ============================================
 // Server Configuration
 // ============================================
@@ -38,15 +47,20 @@ const MAX_USERS = 7;
 const SERVER_URL = window.SERVER_URL || 'http://localhost:3000';
 
 // WebRTC Configuration with FREE STUN and TURN servers
-// Google STUN servers (free) + OpenRelay TURN server (free)
+// Multiple STUN servers + Multiple TURN servers for reliability
 const rtcConfig = {
     iceServers: [
-        // Free Google STUN servers
+        // Free Google STUN servers (multiple for redundancy)
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
         { urls: 'stun:stun3.l.google.com:19302' },
-        // Free TURN server (OpenRelay - no auth required)
+        { urls: 'stun:stun4.l.google.com:19302' },
+        // Additional STUN servers
+        { urls: 'stun:stun.stunprotocol.org:3478' },
+        { urls: 'stun:stun.voiparound.com' },
+        { urls: 'stun:stun.voipbuster.com' },
+        // Free TURN servers (multiple for redundancy)
         { 
             urls: [
                 'turn:openrelay.metered.ca:80',
@@ -55,9 +69,20 @@ const rtcConfig = {
             ],
             username: 'openrelayproject',
             credential: 'openrelayproject'
+        },
+        // Additional free TURN server
+        {
+            urls: [
+                'turn:relay.metered.ca:80',
+                'turn:relay.metered.ca:443',
+                'turn:relay.metered.ca:443?transport=tcp'
+            ],
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
         }
     ],
-    iceCandidatePoolSize: 10
+    iceCandidatePoolSize: 10,
+    iceTransportPolicy: 'all' // Use both relay and direct connections
 };
 
 // ============================================
@@ -147,13 +172,28 @@ function createRemoteVideoElement(socketId, userName) {
     wrapper.className = 'video-wrapper';
     wrapper.dataset.socketId = socketId;
     
-    // Create placeholder for video
+    // Create placeholder for video with loading indicator
     const placeholder = document.createElement('div');
     placeholder.className = 'video-placeholder';
     const avatar = document.createElement('div');
     avatar.className = 'video-placeholder-avatar';
     avatar.textContent = (userName || 'User').charAt(0).toUpperCase();
+    
+    // Add loading spinner
+    const loadingSpinner = document.createElement('div');
+    loadingSpinner.className = 'loading-spinner';
+    loadingSpinner.innerHTML = `
+        <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="animation: spin 1s linear infinite;">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+    `;
+    loadingSpinner.style.display = 'none';
+    loadingSpinner.style.position = 'absolute';
+    loadingSpinner.style.bottom = '1rem';
+    loadingSpinner.style.color = 'hsl(var(--muted-foreground))';
+    
     placeholder.appendChild(avatar);
+    placeholder.appendChild(loadingSpinner);
     wrapper.appendChild(placeholder);
     
     // Create label
@@ -173,7 +213,7 @@ function createRemoteVideoElement(socketId, userName) {
     // Add to container
     videoContainer.appendChild(wrapper);
     
-    return { videoElement: video, videoWrapper: wrapper, videoLabel: label, placeholder: placeholder };
+    return { videoElement: video, videoWrapper: wrapper, videoLabel: label, placeholder: placeholder, loadingSpinner: loadingSpinner };
 }
 
 /**
@@ -272,16 +312,27 @@ function updateVideoLabel(peerData) {
         }
     `;
     
-    // Make video wrapper clickable if sharing
+    // Make video wrapper clickable if sharing screen OR if they have a video stream
     if (peerData.videoWrapper) {
-        if (isSharing) {
-            peerData.videoWrapper.classList.add('sharing-screen');
+        const hasVideoStream = peerData.videoElement && peerData.videoElement.srcObject && 
+                              peerData.videoElement.srcObject.getVideoTracks().length > 0;
+        
+        if (isSharing || hasVideoStream) {
+            // Add sharing-screen class only if actually sharing
+            if (isSharing) {
+                peerData.videoWrapper.classList.add('sharing-screen');
+            } else {
+                peerData.videoWrapper.classList.remove('sharing-screen');
+            }
+            // Make clickable to zoom in
             peerData.videoWrapper.style.cursor = 'pointer';
             peerData.videoWrapper.onclick = () => zoomToVideo(peerData);
+            peerData.videoWrapper.title = isSharing ? 'Click to view full screen (live)' : 'Click to view full screen';
         } else {
             peerData.videoWrapper.classList.remove('sharing-screen');
             peerData.videoWrapper.style.cursor = '';
             peerData.videoWrapper.onclick = null;
+            peerData.videoWrapper.title = '';
         }
     }
 }
@@ -558,12 +609,22 @@ function initializeDraggableMeetingId() {
  * @param {Object} peerData - Peer data object
  */
 function zoomToVideo(peerData) {
-    if (!peerData || !peerData.videoElement || !peerData.isSharingScreen) return;
+    if (!peerData || !peerData.videoElement) {
+        console.warn('⚠️ Cannot zoom: invalid peer data or video element');
+        return;
+    }
+    
+    // Check if user is sharing screen (preferred) or if they have any video stream
+    const hasStream = peerData.videoElement && peerData.videoElement.srcObject;
+    if (!hasStream) {
+        console.warn('⚠️ Cannot zoom: no video stream available');
+        return;
+    }
     
     // Close existing zoom if any
     closeZoomView();
     
-    // Create zoom overlay
+    // Create zoom overlay (full screen)
     const zoomOverlay = document.createElement('div');
     zoomOverlay.className = 'zoom-overlay';
     zoomOverlay.id = 'zoomOverlay';
@@ -576,16 +637,21 @@ function zoomToVideo(peerData) {
     zoomVideo.playsInline = true;
     zoomVideo.srcObject = peerData.videoElement.srcObject;
     zoomVideo.className = 'zoom-video';
+    zoomVideo.controls = false; // No controls for cleaner view
     
-    const zoomLabel = document.createElement('div');
-    zoomLabel.className = 'zoom-label';
-    zoomLabel.innerHTML = `
-        <span>${peerData.userName || 'User'}</span>
-        <span class="screen-share-indicator">
-            <span class="screen-share-dot"></span>
-            <span class="screen-share-text">now live</span>
-        </span>
-    `;
+    // Show label only if sharing screen
+    if (peerData.isSharingScreen) {
+        const zoomLabel = document.createElement('div');
+        zoomLabel.className = 'zoom-label';
+        zoomLabel.innerHTML = `
+            <span>${peerData.userName || 'User'}</span>
+            <span class="screen-share-indicator">
+                <span class="screen-share-dot"></span>
+                <span class="screen-share-text">now live</span>
+            </span>
+        `;
+        zoomContent.appendChild(zoomLabel);
+    }
     
     const closeBtn = document.createElement('button');
     closeBtn.className = 'zoom-close-btn';
@@ -595,9 +661,9 @@ function zoomToVideo(peerData) {
         </svg>
     `;
     closeBtn.onclick = closeZoomView;
+    closeBtn.title = 'Close (Esc)';
     
     zoomContent.appendChild(zoomVideo);
-    zoomContent.appendChild(zoomLabel);
     zoomContent.appendChild(closeBtn);
     zoomOverlay.appendChild(zoomContent);
     
@@ -606,6 +672,9 @@ function zoomToVideo(peerData) {
     // Store references
     zoomedVideoElement = zoomVideo;
     zoomedVideoWrapper = zoomOverlay;
+    
+    // Prevent body scroll when zoomed
+    document.body.style.overflow = 'hidden';
     
     // Close on overlay click (but not on content click)
     zoomOverlay.onclick = (e) => {
@@ -622,6 +691,8 @@ function zoomToVideo(peerData) {
         }
     };
     document.addEventListener('keydown', escapeHandler);
+    
+    console.log('✅ Opened full-screen view for', peerData.userName || 'User');
 }
 
 /**
@@ -699,6 +770,9 @@ function zoomToLocalVideo() {
  * Close zoom view
  */
 function closeZoomView() {
+    // Restore body scroll
+    document.body.style.overflow = '';
+    
     if (zoomedVideoWrapper) {
         zoomedVideoWrapper.remove();
         zoomedVideoWrapper = null;
@@ -707,6 +781,8 @@ function closeZoomView() {
         zoomedVideoElement.srcObject = null;
         zoomedVideoElement = null;
     }
+    
+    console.log('✅ Closed full-screen view');
 }
 
 /**
@@ -888,6 +964,12 @@ function cleanupRemotePeer(socketId) {
     const peerData = remotePeers.get(socketId);
     if (!peerData) return;
     
+    // Clear any pending timeouts
+    if (peerData.streamTimeout) {
+        clearTimeout(peerData.streamTimeout);
+        peerData.streamTimeout = null;
+    }
+    
     // Close call
     if (peerData.call) {
         try {
@@ -999,10 +1081,13 @@ function cleanup() {
 function initializeSocket() {
     try {
         socket = io(SERVER_URL, {
-            transports: ['websocket', 'polling'],
+            transports: ['websocket', 'polling'], // Try both transports
             reconnection: true,
             reconnectionDelay: 1000,
-            reconnectionAttempts: 5
+            reconnectionDelayMax: 5000,
+            reconnectionAttempts: 10, // Increased for slow connections
+            timeout: 20000, // 20 second connection timeout
+            forceNew: false
         });
 
         socket.on('connect', () => {
@@ -1074,7 +1159,10 @@ function initializeSocket() {
                             videoElement: videoElements.videoElement,
                             videoWrapper: videoElements.videoWrapper,
                             videoLabel: videoElements.videoLabel,
-                            placeholder: videoElements.placeholder
+                            placeholder: videoElements.placeholder,
+                            loadingSpinner: videoElements.loadingSpinner,
+                            connectionAttempts: 0,
+                            streamTimeout: null
                         });
                         
                         // Connect to this peer with staggered delays to avoid race conditions
@@ -1123,7 +1211,10 @@ function initializeSocket() {
                     videoElement: videoElements.videoElement,
                     videoWrapper: videoElements.videoWrapper,
                     videoLabel: videoElements.videoLabel,
-                    placeholder: videoElements.placeholder
+                    placeholder: videoElements.placeholder,
+                    loadingSpinner: videoElements.loadingSpinner,
+                    connectionAttempts: 0,
+                    streamTimeout: null
                 });
                 updateVideoGrid();
                 updateParticipantsList();
@@ -1149,7 +1240,10 @@ function initializeSocket() {
                         videoElement: videoElements.videoElement,
                         videoWrapper: videoElements.videoWrapper,
                         videoLabel: videoElements.videoLabel,
-                        placeholder: videoElements.placeholder
+                        placeholder: videoElements.placeholder,
+                        loadingSpinner: videoElements.loadingSpinner,
+                        connectionAttempts: 0,
+                        streamTimeout: null
                     });
                     updateVideoGrid();
                 } else {
@@ -1304,9 +1398,10 @@ function initializeSocket() {
 function initializePeer() {
     try {
         // Create PeerJS instance with custom ICE servers
+        // Use PeerJS cloud service (no key specified) for better connectivity
         peer = new Peer({
             config: rtcConfig,
-            debug: 2 // Enable debug logging
+            debug: 1 // Reduced debug logging for production
         });
 
         peer.on('open', (id) => {
@@ -1361,8 +1456,14 @@ function initializePeer() {
                 // Answer anyway - we'll handle it when we get the socket ID
             }
             
-            // Answer the call with local stream (if available)
-            const streamToSend = localStream || new MediaStream();
+            // Answer the call with local stream (or empty stream if no media)
+            let streamToSend;
+            if (localStream) {
+                streamToSend = localStream;
+            } else {
+                streamToSend = new MediaStream();
+                console.log('📡 Answering call with empty stream (no local media)');
+            }
             call.answer(streamToSend);
 
             // Handle remote stream
@@ -1491,53 +1592,76 @@ function initializePeer() {
  * @returns {Promise<MediaStream>} Media stream
  */
 async function getUserMedia(withVideo, withAudio) {
-    try {
-        const constraints = {
-            video: withVideo ? {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                facingMode: 'user'
-            } : false,
-            audio: withAudio ? {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            } : false
-        };
+    // Try with ideal constraints first
+    let constraints = {
+        video: withVideo ? {
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+        } : false,
+        audio: withAudio ? {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+        } : false
+    };
 
+    try {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         console.log('✅ Got media stream:', {
             video: stream.getVideoTracks().length > 0,
             audio: stream.getAudioTracks().length > 0
         });
         return stream;
-
     } catch (error) {
-        console.error('❌ Error getting user media:', error);
+        console.warn('⚠️ Failed with ideal constraints, trying basic constraints...', error);
         
-        // Provide user-friendly error messages
-        let errorMessage = 'Could not access ';
-        if (withVideo && withAudio) {
-            errorMessage += 'camera and microphone';
-        } else if (withVideo) {
-            errorMessage += 'camera';
-        } else {
-            errorMessage += 'microphone';
+        // Fallback 1: Try without ideal constraints
+        try {
+            constraints = {
+                video: withVideo ? true : false,
+                audio: withAudio ? true : false
+            };
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            console.log('✅ Got media stream with basic constraints');
+            return stream;
+        } catch (error2) {
+            console.warn('⚠️ Failed with basic constraints, trying audio only...', error2);
+            
+            // Fallback 2: If video fails, try audio only
+            if (withVideo && withAudio) {
+                try {
+                    constraints = {
+                        video: false,
+                        audio: withAudio ? true : false
+                    };
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    console.log('✅ Got audio-only stream');
+                    return stream;
+                } catch (error3) {
+                    console.warn('⚠️ All getUserMedia attempts failed');
+                }
+            }
         }
-
-        if (error.name === 'NotAllowedError') {
-            errorMessage += '. Please allow access and try again.';
-        } else if (error.name === 'NotFoundError') {
-            errorMessage += '. No device found.';
-        } else if (error.name === 'NotReadableError') {
-            errorMessage += '. Device may be in use by another application.';
-        } else {
-            errorMessage += '. Error: ' + error.message;
-        }
-
-        showStatus(errorMessage, 'error');
-        throw error;
     }
+    
+    // If all attempts failed, log but don't throw - let caller handle gracefully
+    console.warn('⚠️ Could not access media devices. User can still join and receive streams.');
+    
+    // Provide user-friendly error message (non-blocking)
+    let errorMessage = 'Could not access ';
+    if (withVideo && withAudio) {
+        errorMessage += 'camera and microphone';
+    } else if (withVideo) {
+        errorMessage += 'camera';
+    } else {
+        errorMessage += 'microphone';
+    }
+    errorMessage += '. You can still join and receive audio/video from others.';
+    
+    showStatus(errorMessage, 'info'); // Use 'info' instead of 'error' to be less alarming
+    
+    // Return null instead of throwing - caller should handle this gracefully
+    return null;
 }
 
 /**
@@ -1782,11 +1906,30 @@ async function startCall(withVideo) {
         if (!socket || !socket.connected) {
             initializeSocket();
             await new Promise((resolve) => {
+                let resolved = false;
+                const timeout = setTimeout(() => {
+                    if (!resolved) {
+                        resolved = true;
+                        console.warn('⚠️ Socket connection timeout');
+                        showStatus('Slow connection detected. Still connecting...', 'info');
+                        resolve();
+                    }
+                }, CONNECTION_TIMEOUTS.PEER_INIT);
+                
                 if (socket) {
-                    socket.once('connect', resolve);
-                    setTimeout(resolve, 2000); // Timeout after 2 seconds
+                    socket.once('connect', () => {
+                        if (!resolved) {
+                            resolved = true;
+                            clearTimeout(timeout);
+                            resolve();
+                        }
+                    });
                 } else {
-                    resolve();
+                    if (!resolved) {
+                        resolved = true;
+                        clearTimeout(timeout);
+                        resolve();
+                    }
                 }
             });
         }
@@ -1794,13 +1937,32 @@ async function startCall(withVideo) {
         // Initialize PeerJS if not already initialized
         if (!peer || peer.destroyed) {
             initializePeer();
-            // Wait for peer to be ready
+            // Wait for peer to be ready with timeout
             await new Promise((resolve) => {
+                let resolved = false;
+                const timeout = setTimeout(() => {
+                    if (!resolved) {
+                        resolved = true;
+                        console.warn('⚠️ PeerJS initialization timeout');
+                        showStatus('Slow connection detected. Still connecting...', 'info');
+                        resolve();
+                    }
+                }, CONNECTION_TIMEOUTS.PEER_INIT);
+                
                 if (peer) {
-                    peer.once('open', resolve);
-                    setTimeout(resolve, 2000); // Timeout after 2 seconds
+                    peer.once('open', () => {
+                        if (!resolved) {
+                            resolved = true;
+                            clearTimeout(timeout);
+                            resolve();
+                        }
+                    });
                 } else {
-                    resolve();
+                    if (!resolved) {
+                        resolved = true;
+                        clearTimeout(timeout);
+                        resolve();
+                    }
                 }
             });
         }
@@ -1851,9 +2013,12 @@ async function startCall(withVideo) {
         }
 
         // Try to get user media (but continue even if it fails)
-        try {
-            localStream = await getUserMedia(withVideo, true);
-            if (localStream && localVideo) {
+        // getUserMedia now returns null instead of throwing, so we handle it gracefully
+        localStream = await getUserMedia(withVideo, true);
+        
+        if (localStream) {
+            // Successfully got media stream
+            if (localVideo) {
                 localVideo.srcObject = localStream;
                 localVideo.style.display = 'block';
                 // Hide placeholder
@@ -1862,20 +2027,24 @@ async function startCall(withVideo) {
                     placeholder.style.display = 'none';
                 }
             }
-        } catch (mediaError) {
-            console.warn('⚠️ Could not access camera/microphone:', mediaError);
-            
-            // Create empty stream if no media available
-            // User can still join and receive audio/video from others
+            console.log('✅ Local media stream set up successfully');
+        } else {
+            // No media available - create empty stream so user can still join
+            // User can still receive audio/video from others
             try {
                 localStream = new MediaStream();
-                console.log('✅ Created empty media stream (no camera/mic)');
+                console.log('✅ Created empty media stream (no camera/mic) - user can still receive streams');
                 if (localVideo) {
-                    localVideo.srcObject = localStream;
+                    // Keep placeholder visible since no local video
+                    const placeholder = document.getElementById('local-placeholder');
+                    if (placeholder) {
+                        placeholder.style.display = 'flex';
+                    }
                 }
-                showStatus('No camera/microphone available. You can still join and receive audio/video.', 'info');
             } catch (streamError) {
                 console.error('❌ Failed to create empty stream:', streamError);
+                // Still create a null stream so the flow continues
+                localStream = null;
             }
         }
 
@@ -1956,7 +2125,15 @@ async function connectToUser(peerId, socketId) {
         console.log('🔗 Connecting to user - PeerJS ID:', peerId, 'Socket ID:', socketId);
 
         // Create call with local stream (or empty stream if no media)
-        const streamToSend = localStream || new MediaStream();
+        // Always create a valid MediaStream, even if empty
+        let streamToSend;
+        if (localStream) {
+            streamToSend = localStream;
+        } else {
+            // Create empty stream so peer connection can be established
+            streamToSend = new MediaStream();
+            console.log('📡 Using empty stream for peer connection (no local media)');
+        }
         
         const call = peer.call(peerId, streamToSend);
         
@@ -1983,12 +2160,21 @@ async function connectToUser(peerId, socketId) {
                     videoElement: videoElements.videoElement,
                     videoWrapper: videoElements.videoWrapper,
                     videoLabel: videoElements.videoLabel,
-                    placeholder: videoElements.placeholder
+                    placeholder: videoElements.placeholder,
+                    loadingSpinner: videoElements.loadingSpinner,
+                    connectionAttempts: 1,
+                    streamTimeout: null
                 });
+                
+                // Show loading spinner
+                if (videoElements.loadingSpinner) {
+                    videoElements.loadingSpinner.style.display = 'block';
+                }
                 updateVideoGrid();
             } else {
                 const peerData = remotePeers.get(socketId);
                 peerData.call = call;
+                peerData.connectionAttempts = (peerData.connectionAttempts || 0) + 1;
                 // Ensure video element exists
                 if (!peerData.videoElement) {
                     console.warn('⚠️ Video element missing in connectToUser for socket:', socketId);
@@ -1997,24 +2183,94 @@ async function connectToUser(peerId, socketId) {
                     peerData.videoWrapper = videoElements.videoWrapper;
                     peerData.videoLabel = videoElements.videoLabel;
                     peerData.placeholder = videoElements.placeholder;
+                    peerData.loadingSpinner = videoElements.loadingSpinner;
                     updateVideoGrid();
                 }
+                
+                // Show loading spinner
+                if (peerData.loadingSpinner) {
+                    peerData.loadingSpinner.style.display = 'block';
+                }
             }
+        }
+
+        // Set timeout for stream to arrive
+        const peerData = socketId ? remotePeers.get(socketId) : null;
+        if (peerData) {
+            // Clear any existing timeout
+            if (peerData.streamTimeout) {
+                clearTimeout(peerData.streamTimeout);
+            }
+            
+            // Set new timeout
+            peerData.streamTimeout = setTimeout(() => {
+                if (peerData && !peerData.stream) {
+                    console.warn('⚠️ Stream timeout for socket:', socketId, '- retrying...');
+                    showStatus(`Slow connection detected. Retrying... (${peerData.connectionAttempts || 1}/${CONNECTION_TIMEOUTS.MAX_RETRIES})`, 'info');
+                    
+                    // Retry connection if under max retries
+                    if ((peerData.connectionAttempts || 1) < CONNECTION_TIMEOUTS.MAX_RETRIES) {
+                        setTimeout(() => {
+                            if (peerData && peerData.peerId && currentRoomId) {
+                                connectToUser(peerData.peerId, socketId);
+                            }
+                        }, CONNECTION_TIMEOUTS.RETRY_DELAY * (peerData.connectionAttempts || 1)); // Exponential backoff
+                    } else {
+                        showStatus('Connection timeout. Please check your internet connection.', 'error');
+                        // Show slow connection indicator
+                        if (peerData.placeholder) {
+                            const placeholder = peerData.placeholder;
+                            placeholder.innerHTML = `
+                                <div class="video-placeholder-avatar" style="opacity: 0.5;">
+                                    ${(peerData.userName || 'User').charAt(0).toUpperCase()}
+                                </div>
+                                <div style="position: absolute; bottom: 1rem; color: hsl(var(--muted-foreground)); font-size: 0.75rem; text-align: center;">
+                                    Slow connection...
+                                </div>
+                            `;
+                        }
+                    }
+                }
+            }, CONNECTION_TIMEOUTS.STREAM_LOAD);
         }
 
         // Handle remote stream
         call.on('stream', (stream) => {
             console.log('✅ Received remote stream from PeerJS ID:', peerId);
             
+            // Clear timeout since stream arrived
+            if (peerData && peerData.streamTimeout) {
+                clearTimeout(peerData.streamTimeout);
+                peerData.streamTimeout = null;
+            }
+            
             if (socketId && remotePeers.has(socketId)) {
                 const peerData = remotePeers.get(socketId);
                 peerData.stream = stream;
+                peerData.connectionAttempts = 0; // Reset on success
+                
+                // Ensure video element exists
+                if (!peerData.videoElement) {
+                    const videoElements = createRemoteVideoElement(socketId, peerData.userName || 'User');
+                    peerData.videoElement = videoElements.videoElement;
+                    peerData.videoWrapper = videoElements.videoWrapper;
+                    peerData.videoLabel = videoElements.videoLabel;
+                    peerData.placeholder = videoElements.placeholder;
+                    peerData.loadingSpinner = videoElements.loadingSpinner;
+                    updateVideoGrid();
+                }
+                
                 peerData.videoElement.srcObject = stream;
                 peerData.videoElement.style.display = 'block';
-                // Hide placeholder
+                
+                // Hide placeholder and loading spinner
                 if (peerData.placeholder) {
                     peerData.placeholder.style.display = 'none';
                 }
+                if (peerData.loadingSpinner) {
+                    peerData.loadingSpinner.style.display = 'none';
+                }
+                
                 updateVideoLabel(peerData);
                 console.log('✅ Stream assigned to socket:', socketId);
             } else {
