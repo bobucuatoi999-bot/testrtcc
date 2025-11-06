@@ -641,9 +641,27 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
     try {
         if (!recvTransport || !device) {
             console.warn('⚠️ Transports not ready, will retry later');
+            // Retry after transports are ready
+            setTimeout(() => {
+                if (recvTransport && device) {
+                    consumeProducer(producerId, socketId, kind, remoteUserName);
+                }
+            }, 1000);
+            return;
+        }
+        
+        if (!device.loaded) {
+            console.warn('⚠️ Device not loaded, will retry later');
+            setTimeout(() => {
+                if (device && device.loaded) {
+                    consumeProducer(producerId, socketId, kind, remoteUserName);
+                }
+            }, 1000);
             return;
         }
 
+        console.log(`🔄 Requesting to consume ${kind} from producer ${producerId} (user: ${remoteUserName || socketId})`);
+        
         // Request to consume this producer
         socket.emit('consume', {
             producerId: producerId,
@@ -651,36 +669,78 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
             roomId: currentRoomId
         });
 
-        // Wait for consumed event
-        socket.once('consumed', async (data) => {
-            try {
+        // Wait for consumed event with timeout
+        const consumedPromise = new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                socket.off('consumed', consumedHandler);
+                reject(new Error('Timeout waiting for consumed event'));
+            }, 10000); // 10 second timeout
+            
+            const consumedHandler = async (data) => {
                 if (data.producerId !== producerId) {
                     // This is for a different producer, ignore
                     return;
                 }
-
-                // Create consumer
-                const consumer = await recvTransport.consume({
-                    id: data.id,
-                    producerId: data.producerId,
-                    kind: data.kind,
-                    rtpParameters: data.rtpParameters
-                });
-
-                // Get or create remote user data
-                if (!remoteConsumers.has(socketId)) {
-                    remoteConsumers.set(socketId, {
-                        audioConsumer: null,
-                        videoConsumer: null,
-                        userName: remoteUserName || 'User',
-                        videoElement: null,
-                        videoWrapper: null,
-                        videoLabel: null,
-                        isSharingScreen: false
-                    });
+                
+                clearTimeout(timeout);
+                socket.off('consumed', consumedHandler);
+                resolve(data);
+            };
+            
+            socket.on('consumed', consumedHandler);
+        });
+        
+        try {
+            const data = await consumedPromise;
+            
+            // Create consumer
+            const consumer = await recvTransport.consume({
+                id: data.id,
+                producerId: data.producerId,
+                kind: data.kind,
+                rtpParameters: data.rtpParameters
+            });
+            
+            // Handle consumer track ended
+            consumer.track.on('ended', () => {
+                console.log(`⚠️ Track ended for ${kind} from ${socketId}`);
+                if (kind === 'video') {
+                    const remoteUser = remoteConsumers.get(socketId);
+                    if (remoteUser && remoteUser.videoElement) {
+                        // Show placeholder when video track ends
+                        if (remoteUser.placeholder) {
+                            remoteUser.placeholder.style.display = 'flex';
+                        }
+                        if (remoteUser.videoElement) {
+                            remoteUser.videoElement.style.display = 'none';
+                        }
+                    }
                 }
+            });
+            
+            // Handle consumer track muted/unmuted
+            consumer.track.on('mute', () => {
+                console.log(`🔇 Track muted for ${kind} from ${socketId}`);
+            });
+            
+            consumer.track.on('unmute', () => {
+                console.log(`🔊 Track unmuted for ${kind} from ${socketId}`);
+            });
 
-                const remoteUser = remoteConsumers.get(socketId);
+            // Get or create remote user data
+            if (!remoteConsumers.has(socketId)) {
+                remoteConsumers.set(socketId, {
+                    audioConsumer: null,
+                    videoConsumer: null,
+                    userName: remoteUserName || 'User',
+                    videoElement: null,
+                    videoWrapper: null,
+                    videoLabel: null,
+                    isSharingScreen: false
+                });
+            }
+
+            const remoteUser = remoteConsumers.get(socketId);
 
                 // Store consumer based on kind
                 if (kind === 'audio') {
