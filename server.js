@@ -50,6 +50,10 @@ const userMessageCounts = new Map();
 // Format: { roomId: socketId }
 const roomAdmins = new Map();
 
+// Store admin user names for persistence (to restore admin on rejoin)
+// Format: { roomId: userName }
+const roomAdminNames = new Map();
+
 // Store room passwords
 // Format: { roomId: password }
 const roomPasswords = new Map();
@@ -89,6 +93,15 @@ io.on('connection', (socket) => {
         console.log(`👤 User ${socket.id} set name: ${userName}`);
       }
 
+      // Check if this is a new room (first user)
+      const isNewRoom = !rooms.has(roomId) || rooms.get(roomId).size === 0;
+      
+      // If new room and password provided, set it
+      if (isNewRoom && password && password.trim().length > 0) {
+        roomPasswords.set(roomId, password.trim());
+        console.log(`🔒 Password set for new room ${roomId} by ${userName || socket.id}`);
+      }
+
       // Check if room has password
       const roomPassword = roomPasswords.get(roomId);
       if (roomPassword) {
@@ -113,10 +126,18 @@ io.on('connection', (socket) => {
         console.log(`❌ Room ${roomId} is full (${currentRoomUsers.size}/${MAX_USERS_PER_ROOM})`);
         return;
       }
-
-      // Check if this is a new room (first user)
-      const isNewRoom = !rooms.has(roomId) || rooms.get(roomId).size === 0;
-      const isAdmin = isNewRoom;
+      
+      // Check if user is the original admin (by name) - restore admin if they rejoin
+      let isAdmin = isNewRoom;
+      if (!isNewRoom && userName) {
+        const originalAdminName = roomAdminNames.get(roomId);
+        if (originalAdminName === userName) {
+          // Original admin rejoining - restore admin status
+          isAdmin = true;
+          roomAdmins.set(roomId, socket.id);
+          console.log(`👑 Admin ${userName} rejoined room ${roomId} - admin status restored`);
+        }
+      }
 
       // Leave any existing rooms
       if (socket.rooms) {
@@ -145,7 +166,10 @@ io.on('connection', (socket) => {
       // Set admin if this is a new room
       if (isAdmin) {
         roomAdmins.set(roomId, socket.id);
-        console.log(`👑 User ${socket.id} is now admin of room ${roomId}`);
+        if (userName) {
+          roomAdminNames.set(roomId, userName);
+        }
+        console.log(`👑 User ${socket.id} (${userName || 'Unknown'}) is now admin of room ${roomId}`);
       }
       
       const roomUserCount = rooms.get(roomId).size;
@@ -444,6 +468,10 @@ io.on('connection', (socket) => {
               roomAdmins.delete(roomId);
               console.log(`🗑️  Admin cleared for empty room ${roomId}`);
             }
+            if (roomAdminNames.has(roomId)) {
+              roomAdminNames.delete(roomId);
+              console.log(`🗑️  Admin name cleared for empty room ${roomId}`);
+            }
             if (roomPasswords.has(roomId)) {
               roomPasswords.delete(roomId);
               console.log(`🗑️  Password cleared for empty room ${roomId}`);
@@ -505,6 +533,10 @@ io.on('connection', (socket) => {
           if (roomAdmins.has(roomId)) {
             roomAdmins.delete(roomId);
             console.log(`🗑️  Admin cleared for empty room ${roomId}`);
+          }
+          if (roomAdminNames.has(roomId)) {
+            roomAdminNames.delete(roomId);
+            console.log(`🗑️  Admin name cleared for empty room ${roomId}`);
           }
           if (roomPasswords.has(roomId)) {
             roomPasswords.delete(roomId);

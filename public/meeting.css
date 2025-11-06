@@ -68,6 +68,9 @@ body {
     border-radius: 0.5rem;
     padding: 0.5rem 0.75rem;
     box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
 }
 
 .meeting-id-content {
@@ -108,6 +111,28 @@ body {
 .copy-meeting-id-btn:hover {
     background: hsl(var(--secondary));
     color: hsl(var(--primary));
+}
+
+.room-password-display {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    padding: 0.375rem 0.75rem;
+    background: hsl(var(--primary) / 0.1);
+    border: 1px solid hsl(var(--primary) / 0.2);
+    border-radius: 0.375rem;
+    font-size: 0.75rem;
+    color: hsl(var(--primary));
+}
+
+.room-password-display svg {
+    flex-shrink: 0;
+    color: hsl(var(--primary));
+}
+
+.room-password-value {
+    font-weight: 500;
 }
 
 .video-grid {

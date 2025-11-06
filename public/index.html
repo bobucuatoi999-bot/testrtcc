@@ -447,6 +447,14 @@
                         maxlength="30"
                     />
 
+                    <input
+                        type="password"
+                        id="roomPasswordInput"
+                        placeholder="Room password (optional)"
+                        maxlength="50"
+                        style="margin-top: 0.75rem;"
+                    />
+
                     <button 
                         id="startNewMeetingBtn"
                         class="btn btn-primary"
@@ -542,8 +550,17 @@
             // Generate random room ID starting with "9w"
             const randomPart = Math.random().toString(36).substring(2, 9);
             const roomId = '9w' + randomPart;
+            
+            // Get optional password
+            const passwordInput = document.getElementById('roomPasswordInput');
+            const password = passwordInput ? passwordInput.value.trim() : '';
+            
             // Navigate to meeting page with params
-            window.location.href = `meeting.html?room=${roomId}&name=${encodeURIComponent(name)}&video=true`;
+            let url = `meeting.html?room=${roomId}&name=${encodeURIComponent(name)}&video=true`;
+            if (password) {
+                url += `&password=${encodeURIComponent(password)}`;
+            }
+            window.location.href = url;
         }
 
         function handleJoinMeeting() {

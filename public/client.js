@@ -300,12 +300,14 @@ function updateParticipantsList() {
         adminControls.style.display = isRoomAdmin ? 'flex' : 'none';
     }
     
-    // Update password button visibility
-    const setPasswordBtn = document.getElementById('setPasswordBtn');
-    const resetPasswordBtn = document.getElementById('resetPasswordBtn');
-    if (setPasswordBtn && resetPasswordBtn) {
-        setPasswordBtn.style.display = roomHasPassword ? 'none' : 'flex';
-        resetPasswordBtn.style.display = roomHasPassword ? 'flex' : 'none';
+    // Update password button visibility (only for admin)
+    if (isRoomAdmin) {
+        const setPasswordBtn = document.getElementById('setPasswordBtn');
+        const resetPasswordBtn = document.getElementById('resetPasswordBtn');
+        if (setPasswordBtn && resetPasswordBtn) {
+            setPasswordBtn.style.display = roomHasPassword ? 'none' : 'flex';
+            resetPasswordBtn.style.display = roomHasPassword ? 'flex' : 'none';
+        }
     }
 }
 
@@ -316,6 +318,16 @@ function displayMeetingId(roomId) {
     const meetingIdValue = document.getElementById('meetingIdValue');
     if (meetingIdValue && roomId) {
         meetingIdValue.textContent = roomId;
+    }
+}
+
+/**
+ * Display room password status
+ */
+function displayRoomPassword(hasPassword) {
+    const passwordDisplay = document.getElementById('roomPasswordDisplay');
+    if (passwordDisplay) {
+        passwordDisplay.style.display = hasPassword ? 'flex' : 'none';
     }
 }
 
@@ -642,6 +654,9 @@ function initializeSocket() {
             // Display meeting ID
             displayMeetingId(data.roomId);
             
+            // Display password status
+            displayRoomPassword(roomHasPassword);
+            
             // Update participants list to show admin badge and controls
             updateParticipantsList();
             
@@ -705,7 +720,9 @@ function initializeSocket() {
                 const peerData = remotePeers.get(data.userId);
                 peerData.userName = remoteUserName;
                 peerData.isAdmin = data.isAdmin || false;
-                updateVideoLabel(peerData);
+                if (peerData.videoLabel) {
+                    updateVideoLabel(peerData);
+                }
                 // Update placeholder avatar if visible
                 if (peerData.placeholder) {
                     const avatar = peerData.placeholder.querySelector('.video-placeholder-avatar');
@@ -715,20 +732,23 @@ function initializeSocket() {
                 }
                 updateParticipantsList();
             } else {
-                // Store admin status for when peer-id arrives
+                // Create video element immediately for new user (even without peer-id yet)
+                const videoElements = createRemoteVideoElement(data.userId, remoteUserName);
                 remotePeers.set(data.userId, {
                     userName: remoteUserName,
                     isAdmin: data.isAdmin || false,
-                    peerId: null,
+                    peerId: null, // Will be set when peer-id arrives
                     call: null,
                     stream: null,
-                    videoElement: null,
-                    videoWrapper: null,
-                    videoLabel: null,
-                    placeholder: null
+                    videoElement: videoElements.videoElement,
+                    videoWrapper: videoElements.videoWrapper,
+                    videoLabel: videoElements.videoLabel,
+                    placeholder: videoElements.placeholder
                 });
+                updateVideoGrid();
+                updateParticipantsList();
+                console.log('✅ Created video element for new user:', data.userId);
             }
-            // Otherwise, we'll create the entry when peer-id arrives
         });
 
         // Handle PeerJS ID exchange
@@ -862,6 +882,7 @@ function initializeSocket() {
         // Handle password set success
         socket.on('password-set-success', (data) => {
             roomHasPassword = true;
+            displayRoomPassword(true);
             updateParticipantsList();
             showStatus('Password set successfully', 'success');
         });
@@ -869,6 +890,7 @@ function initializeSocket() {
         // Handle password reset success
         socket.on('password-reset-success', (data) => {
             roomHasPassword = false;
+            displayRoomPassword(false);
             updateParticipantsList();
             showStatus('Password removed successfully', 'success');
         });
@@ -876,6 +898,7 @@ function initializeSocket() {
         // Handle room password updated (broadcast to all users)
         socket.on('room-password-updated', (data) => {
             roomHasPassword = data.hasPassword || false;
+            displayRoomPassword(roomHasPassword);
             updateParticipantsList();
             if (data.hasPassword) {
                 showStatus('Room password has been set', 'info');
@@ -970,8 +993,22 @@ function initializePeer() {
                 const peerData = remotePeers.get(targetSocketId);
                 peerData.call = call;
                 peerData.stream = stream;
-                peerData.videoElement.srcObject = stream;
-                peerData.videoElement.style.display = 'block';
+                // Ensure video element exists before setting srcObject
+                if (peerData.videoElement) {
+                    peerData.videoElement.srcObject = stream;
+                    peerData.videoElement.style.display = 'block';
+                } else {
+                    console.warn('⚠️ Video element not found for socket:', targetSocketId);
+                    // Create video element if missing
+                    const videoElements = createRemoteVideoElement(targetSocketId, peerData.userName || 'User');
+                    peerData.videoElement = videoElements.videoElement;
+                    peerData.videoWrapper = videoElements.videoWrapper;
+                    peerData.videoLabel = videoElements.videoLabel;
+                    peerData.placeholder = videoElements.placeholder;
+                    peerData.videoElement.srcObject = stream;
+                    peerData.videoElement.style.display = 'block';
+                    updateVideoGrid();
+                }
                 // Hide placeholder
                 if (peerData.placeholder) {
                     peerData.placeholder.style.display = 'none';
@@ -985,8 +1022,22 @@ function initializePeer() {
                     if (peerData.peerId === call.peer) {
                         peerData.call = call;
                         peerData.stream = stream;
-                        peerData.videoElement.srcObject = stream;
-                        peerData.videoElement.style.display = 'block';
+                        // Ensure video element exists before setting srcObject
+                        if (peerData.videoElement) {
+                            peerData.videoElement.srcObject = stream;
+                            peerData.videoElement.style.display = 'block';
+                        } else {
+                            console.warn('⚠️ Video element not found for peer:', call.peer);
+                            // Create video element if missing
+                            const videoElements = createRemoteVideoElement(socketId, peerData.userName || 'User');
+                            peerData.videoElement = videoElements.videoElement;
+                            peerData.videoWrapper = videoElements.videoWrapper;
+                            peerData.videoLabel = videoElements.videoLabel;
+                            peerData.placeholder = videoElements.placeholder;
+                            peerData.videoElement.srcObject = stream;
+                            peerData.videoElement.style.display = 'block';
+                            updateVideoGrid();
+                        }
                         // Hide placeholder
                         if (peerData.placeholder) {
                             peerData.placeholder.style.display = 'none';
@@ -1313,11 +1364,12 @@ function resetAdminPassword() {
 async function startCall(withVideo) {
     try {
         // Get user name and room ID from inputs or URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        
         if (nameInput) {
         userName = nameInput.value.trim();
         } else {
             // Try to get from URL params (for meeting.html)
-            const urlParams = new URLSearchParams(window.location.search);
             userName = urlParams.get('name') ? decodeURIComponent(urlParams.get('name')) : null;
         }
         
@@ -1326,8 +1378,13 @@ async function startCall(withVideo) {
             roomId = roomIdInput.value.trim();
         } else {
             // Try to get from URL params (for meeting.html)
-            const urlParams = new URLSearchParams(window.location.search);
             roomId = urlParams.get('room') || '';
+        }
+        
+        // Get password from URL params if provided (for new meetings)
+        const urlPassword = urlParams.get('password');
+        if (urlPassword && !pendingPassword) {
+            pendingPassword = decodeURIComponent(urlPassword);
         }
 
         if (!userName) {
@@ -1534,10 +1591,37 @@ async function connectToUser(peerId, socketId) {
             return;
         }
 
-        // Store call reference
-        if (socketId && remotePeers.has(socketId)) {
-            const peerData = remotePeers.get(socketId);
-            peerData.call = call;
+        // Store call reference and ensure video element exists
+        if (socketId) {
+            if (!remotePeers.has(socketId)) {
+                // Create entry if it doesn't exist
+                const videoElements = createRemoteVideoElement(socketId, 'User');
+                remotePeers.set(socketId, {
+                    peerId: peerId,
+                    userName: 'User',
+                    isAdmin: false,
+                    call: call,
+                    stream: null,
+                    videoElement: videoElements.videoElement,
+                    videoWrapper: videoElements.videoWrapper,
+                    videoLabel: videoElements.videoLabel,
+                    placeholder: videoElements.placeholder
+                });
+                updateVideoGrid();
+            } else {
+                const peerData = remotePeers.get(socketId);
+                peerData.call = call;
+                // Ensure video element exists
+                if (!peerData.videoElement) {
+                    console.warn('⚠️ Video element missing in connectToUser for socket:', socketId);
+                    const videoElements = createRemoteVideoElement(socketId, peerData.userName || 'User');
+                    peerData.videoElement = videoElements.videoElement;
+                    peerData.videoWrapper = videoElements.videoWrapper;
+                    peerData.videoLabel = videoElements.videoLabel;
+                    peerData.placeholder = videoElements.placeholder;
+                    updateVideoGrid();
+                }
+            }
         }
 
         // Handle remote stream
