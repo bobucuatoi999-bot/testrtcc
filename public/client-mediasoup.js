@@ -744,79 +744,79 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
 
             // Store consumer based on kind
             if (kind === 'audio') {
-                    // Close existing audio consumer if any
-                    if (remoteUser.audioConsumer) {
-                        try {
-                            remoteUser.audioConsumer.close();
-                        } catch (e) {
-                            console.warn('Error closing old audio consumer:', e);
-                        }
+                // Close existing audio consumer if any
+                if (remoteUser.audioConsumer) {
+                    try {
+                        remoteUser.audioConsumer.close();
+                    } catch (e) {
+                        console.warn('Error closing old audio consumer:', e);
                     }
-                    
-                    remoteUser.audioConsumer = consumer;
-                    
-                    // Create or update audio element (hidden) to play audio
-                    if (remoteUser.audioElement) {
-                        // Update existing audio element
-                        const existingStream = remoteUser.audioElement.srcObject;
-                        if (existingStream && existingStream instanceof MediaStream) {
-                            const existingTrack = existingStream.getAudioTracks()[0];
-                            if (existingTrack) {
-                                existingStream.removeTrack(existingTrack);
-                                existingTrack.stop();
-                            }
-                            existingStream.addTrack(consumer.track);
-                        } else {
-                            remoteUser.audioElement.srcObject = new MediaStream([consumer.track]);
+                }
+                
+                remoteUser.audioConsumer = consumer;
+                
+                // Create or update audio element (hidden) to play audio
+                if (remoteUser.audioElement) {
+                    // Update existing audio element
+                    const existingStream = remoteUser.audioElement.srcObject;
+                    if (existingStream && existingStream instanceof MediaStream) {
+                        const existingTrack = existingStream.getAudioTracks()[0];
+                        if (existingTrack) {
+                            existingStream.removeTrack(existingTrack);
+                            existingTrack.stop();
                         }
+                        existingStream.addTrack(consumer.track);
                     } else {
-                        // Create new audio element
-                        const audioElement = document.createElement('audio');
-                        audioElement.autoplay = true;
-                        audioElement.playsInline = true;
-                        audioElement.srcObject = new MediaStream([consumer.track]);
-                        audioElement.style.display = 'none';
-                        audioElement.volume = 1.0;
-                        document.body.appendChild(audioElement);
-                        remoteUser.audioElement = audioElement;
-                        
-                        // Handle audio errors
-                        audioElement.addEventListener('error', (e) => {
-                            console.warn('Audio element error:', e);
-                        });
+                        remoteUser.audioElement.srcObject = new MediaStream([consumer.track]);
                     }
+                } else {
+                    // Create new audio element
+                    const audioElement = document.createElement('audio');
+                    audioElement.autoplay = true;
+                    audioElement.playsInline = true;
+                    audioElement.srcObject = new MediaStream([consumer.track]);
+                    audioElement.style.display = 'none';
+                    audioElement.volume = 1.0;
+                    document.body.appendChild(audioElement);
+                    remoteUser.audioElement = audioElement;
                     
-                    console.log(`✅ Audio consumer set up for ${remoteUser.userName || socketId}`);
-                } else if (kind === 'video') {
-                    // Close existing video consumer if any
-                    if (remoteUser.videoConsumer) {
-                        try {
-                            remoteUser.videoConsumer.close();
-                        } catch (e) {
-                            console.warn('Error closing old video consumer:', e);
-                        }
+                    // Handle audio errors
+                    audioElement.addEventListener('error', (e) => {
+                        console.warn('Audio element error:', e);
+                    });
+                }
+                
+                console.log(`✅ Audio consumer set up for ${remoteUser.userName || socketId}`);
+            } else if (kind === 'video') {
+                // Close existing video consumer if any
+                if (remoteUser.videoConsumer) {
+                    try {
+                        remoteUser.videoConsumer.close();
+                    } catch (e) {
+                        console.warn('Error closing old video consumer:', e);
                     }
-                    
-                    remoteUser.videoConsumer = consumer;
-                    // Create or update video element
-                    createRemoteVideoElement(socketId, remoteUser, consumer.track);
                 }
-
-                // Resume consumer (start receiving)
-                await consumer.resume();
-
-                console.log(`✅ Consuming ${kind} from ${socketId}`);
-
-            } catch (error) {
-                console.error(`❌ Error consuming producer ${producerId}:`, error);
-                // Retry consuming after a delay
-                if (kind === 'video') {
-                    console.log(`🔄 Retrying video consumption for ${socketId}...`);
-                    setTimeout(() => {
-                        consumeProducer(producerId, socketId, kind, remoteUserName);
-                    }, 2000);
-                }
+                
+                remoteUser.videoConsumer = consumer;
+                // Create or update video element
+                createRemoteVideoElement(socketId, remoteUser, consumer.track);
             }
+
+            // Resume consumer (start receiving)
+            await consumer.resume();
+
+            console.log(`✅ Consuming ${kind} from ${socketId}`);
+
+        } catch (error) {
+            console.error(`❌ Error consuming producer ${producerId}:`, error);
+            // Retry consuming after a delay
+            if (kind === 'video') {
+                console.log(`🔄 Retrying video consumption for ${socketId}...`);
+                setTimeout(() => {
+                    consumeProducer(producerId, socketId, kind, remoteUserName);
+                }, 2000);
+            }
+        }
         } catch (error) {
             console.error(`❌ Error waiting for consumed event for producer ${producerId}:`, error);
             // Retry the whole consumption process
