@@ -12,8 +12,8 @@
         <div class="meeting-main">
             <!-- Video grid -->
             <div class="video-grid-container">
-                <!-- Meeting ID Display -->
-                <div id="meetingIdDisplay" class="meeting-id-display">
+                <!-- Meeting ID Display (Draggable) -->
+                <div id="meetingIdDisplay" class="meeting-id-display" draggable="true">
                     <div class="meeting-id-content">
                         <span class="meeting-id-label">Meeting ID:</span>
                         <span id="meetingIdValue" class="meeting-id-value">-</span>
@@ -139,6 +139,13 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
                         </svg>
                         <span class="control-label">Participants</span>
+                    </button>
+
+                    <button id="configPasswordBtn" class="control-btn" onclick="togglePasswordConfig()" style="display: none;">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                        </svg>
+                        <span class="control-label">Config Room Password</span>
                     </button>
                 </div>
 

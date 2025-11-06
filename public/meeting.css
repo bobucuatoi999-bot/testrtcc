@@ -57,7 +57,7 @@ body {
     position: relative;
 }
 
-/* Meeting ID Display */
+/* Meeting ID Display (Draggable) */
 .meeting-id-display {
     position: absolute;
     top: 1rem;
@@ -71,6 +71,19 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+    cursor: move;
+    user-select: none;
+    transition: box-shadow 0.2s;
+}
+
+.meeting-id-display:hover {
+    box-shadow: 0 6px 12px -2px rgba(0, 0, 0, 0.4);
+}
+
+.meeting-id-display.dragging {
+    opacity: 0.8;
+    cursor: grabbing;
+    box-shadow: 0 8px 16px -4px rgba(0, 0, 0, 0.5);
 }
 
 .meeting-id-content {

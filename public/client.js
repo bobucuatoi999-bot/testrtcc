@@ -308,6 +308,18 @@ function updateParticipantsList() {
             setPasswordBtn.style.display = roomHasPassword ? 'none' : 'flex';
             resetPasswordBtn.style.display = roomHasPassword ? 'flex' : 'none';
         }
+        
+        // Show config password button in control bar
+        const configPasswordBtn = document.getElementById('configPasswordBtn');
+        if (configPasswordBtn) {
+            configPasswordBtn.style.display = 'flex';
+        }
+    } else {
+        // Hide config password button for non-admin
+        const configPasswordBtn = document.getElementById('configPasswordBtn');
+        if (configPasswordBtn) {
+            configPasswordBtn.style.display = 'none';
+        }
     }
 }
 
@@ -329,6 +341,148 @@ function displayRoomPassword(hasPassword) {
     if (passwordDisplay) {
         passwordDisplay.style.display = hasPassword ? 'flex' : 'none';
     }
+}
+
+/**
+ * Toggle password config modal (admin only)
+ */
+function togglePasswordConfig() {
+    if (!isRoomAdmin) return;
+    
+    if (roomHasPassword) {
+        openResetPasswordModal();
+    } else {
+        openSetPasswordModal();
+    }
+}
+
+/**
+ * Initialize draggable meeting ID display
+ */
+function initializeDraggableMeetingId() {
+    const meetingIdDisplay = document.getElementById('meetingIdDisplay');
+    if (!meetingIdDisplay) return;
+    
+    let isDragging = false;
+    let currentX = 0;
+    let currentY = 0;
+    let initialX = 0;
+    let initialY = 0;
+    
+    // Get saved position from localStorage
+    const savedPosition = localStorage.getItem('meetingIdPosition');
+    if (savedPosition) {
+        try {
+            const { x, y } = JSON.parse(savedPosition);
+            meetingIdDisplay.style.left = x + 'px';
+            meetingIdDisplay.style.top = y + 'px';
+        } catch (e) {
+            console.warn('Failed to load saved position:', e);
+        }
+    }
+    
+    // Mouse down - start dragging
+    meetingIdDisplay.addEventListener('mousedown', (e) => {
+        // Don't drag if clicking on buttons or interactive elements
+        if (e.target.closest('button') || e.target.closest('svg')) {
+            return;
+        }
+        
+        isDragging = true;
+        meetingIdDisplay.classList.add('dragging');
+        
+        initialX = e.clientX - meetingIdDisplay.offsetLeft;
+        initialY = e.clientY - meetingIdDisplay.offsetTop;
+        
+        e.preventDefault();
+    });
+    
+    // Mouse move - update position
+    document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        
+        e.preventDefault();
+        
+        currentX = e.clientX - initialX;
+        currentY = e.clientY - initialY;
+        
+        // Constrain to viewport
+        const maxX = window.innerWidth - meetingIdDisplay.offsetWidth;
+        const maxY = window.innerHeight - meetingIdDisplay.offsetHeight - 100; // Leave space for control bar
+        
+        currentX = Math.max(0, Math.min(currentX, maxX));
+        currentY = Math.max(0, Math.min(currentY, maxY));
+        
+        meetingIdDisplay.style.left = currentX + 'px';
+        meetingIdDisplay.style.top = currentY + 'px';
+    });
+    
+    // Mouse up - stop dragging
+    document.addEventListener('mouseup', () => {
+        if (isDragging) {
+            isDragging = false;
+            meetingIdDisplay.classList.remove('dragging');
+            
+            // Save position to localStorage
+            const position = {
+                x: currentX || meetingIdDisplay.offsetLeft,
+                y: currentY || meetingIdDisplay.offsetTop
+            };
+            localStorage.setItem('meetingIdPosition', JSON.stringify(position));
+        }
+    });
+    
+    // Touch support for mobile
+    let touchStartX = 0;
+    let touchStartY = 0;
+    
+    meetingIdDisplay.addEventListener('touchstart', (e) => {
+        if (e.target.closest('button') || e.target.closest('svg')) {
+            return;
+        }
+        
+        isDragging = true;
+        meetingIdDisplay.classList.add('dragging');
+        
+        const touch = e.touches[0];
+        touchStartX = touch.clientX - meetingIdDisplay.offsetLeft;
+        touchStartY = touch.clientY - meetingIdDisplay.offsetTop;
+        
+        e.preventDefault();
+    });
+    
+    document.addEventListener('touchmove', (e) => {
+        if (!isDragging) return;
+        
+        e.preventDefault();
+        
+        const touch = e.touches[0];
+        currentX = touch.clientX - touchStartX;
+        currentY = touch.clientY - touchStartY;
+        
+        // Constrain to viewport
+        const maxX = window.innerWidth - meetingIdDisplay.offsetWidth;
+        const maxY = window.innerHeight - meetingIdDisplay.offsetHeight - 100;
+        
+        currentX = Math.max(0, Math.min(currentX, maxX));
+        currentY = Math.max(0, Math.min(currentY, maxY));
+        
+        meetingIdDisplay.style.left = currentX + 'px';
+        meetingIdDisplay.style.top = currentY + 'px';
+    });
+    
+    document.addEventListener('touchend', () => {
+        if (isDragging) {
+            isDragging = false;
+            meetingIdDisplay.classList.remove('dragging');
+            
+            const position = {
+                x: currentX || meetingIdDisplay.offsetLeft,
+                y: currentY || meetingIdDisplay.offsetTop
+            };
+            localStorage.setItem('meetingIdPosition', JSON.stringify(position));
+        }
+    });
 }
 
 /**
@@ -1937,6 +2091,9 @@ window.addEventListener('DOMContentLoaded', () => {
         console.error('❌ Video container not found!');
         return;
     }
+    
+    // Initialize draggable meeting ID display
+    initializeDraggableMeetingId();
     
     // Initialize DOM elements (may not exist on meeting page)
     nameInput = document.getElementById('nameInput');
