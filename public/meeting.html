@@ -234,35 +234,110 @@
     </div>
 
     <!-- Load libraries -->
-    <script src="https://unpkg.com/mediasoup-client@3.7.9/dist/mediasoup-client.min.js"></script>
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="config.js"></script>
-    <script src="client-mediasoup.js"></script>
+    <!-- Load mediasoup-client from CDN - must load before client-mediasoup.js -->
+    <script>
+        // Function to load mediasoup-client with fallback
+        function loadMediasoupClient(callback) {
+            // Try primary CDN
+            const script = document.createElement('script');
+            script.src = 'https://unpkg.com/mediasoup-client@3.7.9/dist/mediasoup-client.min.js';
+            script.async = false; // Load synchronously to ensure it's available
+            
+            script.onload = function() {
+                console.log('📦 Mediasoup script loaded, checking for global...');
+                // Wait a bit for the global to be set
+                setTimeout(() => {
+                    // Check for mediasoup in multiple possible locations
+                    const mediasoupLib = window.mediasoup || window.mediasoupClient || (typeof mediasoup !== 'undefined' ? mediasoup : null);
+                    
+                    if (mediasoupLib && typeof mediasoupLib.Device !== 'undefined') {
+                        // Make sure it's available globally
+                        if (!window.mediasoup) {
+                            window.mediasoup = mediasoupLib;
+                        }
+                        console.log('✅ Mediasoup client library loaded successfully');
+                        console.log('📋 Mediasoup available:', typeof window.mediasoup !== 'undefined');
+                        callback();
+                    } else {
+                        console.error('❌ Mediasoup script loaded but Device class not found');
+                        console.log('Available globals:', Object.keys(window).filter(k => k.toLowerCase().includes('media')));
+                        // Try alternative CDN
+                        loadMediasoupClientFallback(callback);
+                    }
+                }, 200);
+            };
+            
+            script.onerror = function() {
+                console.error('❌ Failed to load mediasoup-client from primary CDN');
+                loadMediasoupClientFallback(callback);
+            };
+            
+            document.head.appendChild(script);
+        }
+        
+        // Fallback: Try jsDelivr CDN
+        function loadMediasoupClientFallback(callback) {
+            console.log('🔄 Trying fallback CDN (jsDelivr)...');
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/mediasoup-client@3.7.9/dist/mediasoup-client.min.js';
+            script.async = false;
+            
+            script.onload = function() {
+                setTimeout(() => {
+                    // Check for mediasoup in multiple possible locations
+                    const mediasoupLib = window.mediasoup || window.mediasoupClient || (typeof mediasoup !== 'undefined' ? mediasoup : null);
+                    
+                    if (mediasoupLib && typeof mediasoupLib.Device !== 'undefined') {
+                        // Make sure it's available globally
+                        if (!window.mediasoup) {
+                            window.mediasoup = mediasoupLib;
+                        }
+                        console.log('✅ Mediasoup client loaded from fallback CDN');
+                        callback();
+                    } else {
+                        console.error('❌ Mediasoup failed to load from all CDNs');
+                        console.log('Available globals:', Object.keys(window).filter(k => k.toLowerCase().includes('media')));
+                        alert('Failed to load mediasoup-client library. Please check your internet connection and refresh the page.');
+                    }
+                }, 200);
+            };
+            
+            script.onerror = function() {
+                console.error('❌ All CDN attempts failed');
+                alert('Failed to load mediasoup-client library. Please check your internet connection and refresh the page.');
+            };
+            
+            document.head.appendChild(script);
+        }
+        
+        // Load mediasoup-client first, then other scripts
+        loadMediasoupClient(() => {
+            // Now load socket.io and config
+            const socketScript = document.createElement('script');
+            socketScript.src = '/socket.io/socket.io.js';
+            document.head.appendChild(socketScript);
+            
+            const configScript = document.createElement('script');
+            configScript.src = 'config.js';
+            document.head.appendChild(configScript);
+            
+            // Finally load our client script
+            const clientScript = document.createElement('script');
+            clientScript.src = 'client-mediasoup.js';
+            clientScript.onload = () => console.log('✅ client-mediasoup.js loaded');
+            clientScript.onerror = () => console.error('❌ Failed to load client-mediasoup.js');
+            document.head.appendChild(clientScript);
+        });
+    </script>
     
     <script>
         // Initialize meeting from URL parameters
+        // Note: The actual initialization happens in client-mediasoup.js
+        // This script just ensures the page doesn't redirect immediately
         window.addEventListener('DOMContentLoaded', () => {
-            // Wait for client-mediasoup.js to load
-            setTimeout(() => {
-                const urlParams = new URLSearchParams(window.location.search);
-                const roomId = urlParams.get('room');
-                const name = urlParams.get('name');
-                const video = urlParams.get('video') === 'true';
-                
-                if (name && roomId) {
-                    // Auto-start the call after a short delay to ensure everything is initialized
-                    setTimeout(() => {
-                        if (typeof startCall === 'function') {
-                            startCall(video);
-                        } else {
-                            console.error('startCall function not found');
-                        }
-                    }, 1000);
-                } else {
-                    // If no params, redirect to home
-                    window.location.href = 'index.html';
-                }
-            }, 500);
+            console.log('📄 Meeting page loaded, waiting for client-mediasoup.js to initialize...');
+            // The client-mediasoup.js will handle the actual room joining
+            // No need for additional initialization here
         });
     </script>
 </body>

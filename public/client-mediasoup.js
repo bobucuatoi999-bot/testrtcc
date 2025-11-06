@@ -402,12 +402,19 @@ async function initializeDevice() {
         }
 
         // Check if mediasoup-client is loaded
-        if (typeof mediasoup === 'undefined') {
+        // Check multiple possible locations for the mediasoup library
+        const mediasoupLib = window.mediasoup || (typeof mediasoup !== 'undefined' ? mediasoup : null);
+        
+        if (!mediasoupLib || typeof mediasoupLib.Device === 'undefined') {
+            console.error('❌ Mediasoup library check failed');
+            console.log('window.mediasoup:', typeof window.mediasoup);
+            console.log('typeof mediasoup:', typeof mediasoup);
+            console.log('Available window properties:', Object.keys(window).filter(k => k.toLowerCase().includes('media')));
             throw new Error('Mediasoup client library not loaded. Please include mediasoup-client script.');
         }
 
-        // Create device
-        device = new mediasoup.Device();
+        // Create device using the library
+        device = new mediasoupLib.Device();
 
         // Load router RTP capabilities into device
         await device.load({ routerRtpCapabilities: rtpCapabilities });
