@@ -38,6 +38,9 @@ const userNames = new Map();
 // Format: { socketId: peerId }
 const peerIds = new Map();
 
+// Maximum users per room
+const MAX_USERS_PER_ROOM = 7;
+
 // ============================================
 // Socket.io Connection Handling
 // ============================================
@@ -64,6 +67,16 @@ io.on('connection', (socket) => {
         console.log(`👤 User ${socket.id} set name: ${userName}`);
       }
 
+      // Check room capacity
+      const currentRoomUsers = rooms.get(roomId);
+      if (currentRoomUsers && currentRoomUsers.size >= MAX_USERS_PER_ROOM) {
+        socket.emit('error', { 
+          message: `Room is full. Maximum ${MAX_USERS_PER_ROOM} users allowed.` 
+        });
+        console.log(`❌ Room ${roomId} is full (${currentRoomUsers.size}/${MAX_USERS_PER_ROOM})`);
+        return;
+      }
+
       // Leave any existing rooms
       if (socket.rooms) {
         Array.from(socket.rooms).forEach(room => {
@@ -87,13 +100,17 @@ io.on('connection', (socket) => {
         rooms.set(roomId, new Set());
       }
       rooms.get(roomId).add(socket.id);
+      
+      const roomUserCount = rooms.get(roomId).size;
 
       console.log(`📥 User ${socket.id} joined room: ${roomId}`);
       
       // Notify the user they've successfully joined
       socket.emit('room-joined', { 
         roomId,
-        socketId: socket.id 
+        socketId: socket.id,
+        userCount: roomUserCount,
+        maxUsers: MAX_USERS_PER_ROOM
       });
 
       // Get all users in the room (excluding the current user)
@@ -103,25 +120,35 @@ io.on('connection', (socket) => {
       if (roomUsers.length > 0) {
         const usersWithNames = roomUsers.map(id => ({
           socketId: id,
-          userName: userNames.get(id) || 'User'
+          userName: userNames.get(id) || 'User',
+          peerId: peerIds.get(id) || null
         }));
         socket.emit('room-users', { users: usersWithNames });
-        console.log(`👥 Room ${roomId} has ${roomUsers.length} other user(s)`);
+        console.log(`👥 Room ${roomId} has ${roomUsers.length} other user(s) (${roomUserCount}/${MAX_USERS_PER_ROOM} total)`);
       }
 
       // Notify other users in the room about the new user
       socket.to(roomId).emit('user-joined', { 
         userId: socket.id,
-        userName: userName || 'User'
+        userName: userName || 'User',
+        userCount: roomUserCount,
+        maxUsers: MAX_USERS_PER_ROOM
       });
 
-      // Send my PeerJS ID if I have one
+      // Send my PeerJS ID if I have one (send to all existing users)
       if (peerIds.has(socket.id)) {
         socket.to(roomId).emit('peer-id', {
           peerId: peerIds.get(socket.id),
           socketId: socket.id
         });
       }
+      
+      // Broadcast updated user count to all users in room
+      io.to(roomId).emit('room-updated', {
+        roomId: roomId,
+        userCount: roomUserCount,
+        maxUsers: MAX_USERS_PER_ROOM
+      });
       
     } catch (error) {
       console.error(`❌ Error joining room: ${error.message}`);
@@ -212,7 +239,20 @@ io.on('connection', (socket) => {
         socket.leave(roomId);
         if (rooms.has(roomId)) {
           rooms.get(roomId).delete(socket.id);
-          socket.to(roomId).emit('user-left', { userId: socket.id });
+          const remainingCount = rooms.get(roomId).size;
+          socket.to(roomId).emit('user-left', { 
+            userId: socket.id,
+            userCount: remainingCount,
+            maxUsers: MAX_USERS_PER_ROOM
+          });
+          
+          // Broadcast updated user count
+          io.to(roomId).emit('room-updated', {
+            roomId: roomId,
+            userCount: remainingCount,
+            maxUsers: MAX_USERS_PER_ROOM
+          });
+          
           if (rooms.get(roomId).size === 0) {
             rooms.delete(roomId);
             console.log(`🗑️  Room ${roomId} cleaned up (empty)`);
@@ -241,9 +281,21 @@ io.on('connection', (socket) => {
     rooms.forEach((users, roomId) => {
       if (users.has(socket.id)) {
         users.delete(socket.id);
+        const remainingCount = users.size;
         
         // Notify other users in the room
-        socket.to(roomId).emit('user-left', { userId: socket.id });
+        socket.to(roomId).emit('user-left', { 
+          userId: socket.id,
+          userCount: remainingCount,
+          maxUsers: MAX_USERS_PER_ROOM
+        });
+        
+        // Broadcast updated user count
+        io.to(roomId).emit('room-updated', {
+          roomId: roomId,
+          userCount: remainingCount,
+          maxUsers: MAX_USERS_PER_ROOM
+        });
 
         // Clean up empty rooms
         if (users.size === 0) {

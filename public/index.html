@@ -149,9 +149,23 @@
            ============================================ */
         .video-container {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 20px;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
             margin-bottom: 20px;
+            min-height: 300px;
+        }
+        
+        /* Responsive grid for multiple users */
+        @media (min-width: 768px) {
+            .video-container {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        
+        @media (min-width: 1200px) {
+            .video-container {
+                grid-template-columns: repeat(3, 1fr);
+            }
         }
 
         .video-wrapper {
@@ -178,8 +192,10 @@
             width: 100%;
             height: auto;
             display: block;
-            min-height: 300px;
+            min-height: 250px;
+            max-height: 500px;
             background: #000;
+            object-fit: cover;
         }
 
         /* ============================================
@@ -286,16 +302,9 @@
         </div>
 
         <!-- Video Container -->
-        <div class="video-container">
-            <div class="video-wrapper">
-                <div class="video-label">Your Video</div>
-                <video id="localVideo" autoplay playsinline muted></video>
-            </div>
-
-            <div class="video-wrapper">
-                <div class="video-label">Remote Video</div>
-                <video id="remoteVideo" autoplay playsinline></video>
-            </div>
+        <!-- Video elements will be created dynamically for multi-user support -->
+        <div class="video-container" id="videoContainer">
+            <!-- Local video and remote videos will be added here dynamically -->
         </div>
     </div>
 

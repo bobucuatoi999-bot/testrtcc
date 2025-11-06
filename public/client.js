@@ -10,17 +10,19 @@ let socket = null;              // Socket.io connection
 let peer = null;                // PeerJS peer instance
 let localStream = null;         // Local media stream (camera/mic)
 let screenStream = null;        // Screen share stream
-let remoteStream = null;        // Remote media stream
-let currentCall = null;         // Active PeerJS call
 let isMuted = false;            // Mute state
 let isCameraOff = false;        // Camera off state
 let isSharingScreen = false;   // Screen sharing state
 let currentRoomId = null;       // Currently joined room ID
 let userName = null;            // User's name
 let myPeerId = null;             // My PeerJS ID
-let remotePeerId = null;        // Remote user's PeerJS ID
-let remoteUserName = null;      // Remote user's name
-let iceCandidateQueue = [];     // Queue for ICE candidates received before connection
+
+// Multi-user support: Map of remote peers
+// Format: { socketId: { peerId, userName, call, stream, videoElement, videoWrapper, videoLabel } }
+let remotePeers = new Map();
+
+// Maximum users per room
+const MAX_USERS = 7;
 
 // ============================================
 // Server Configuration
@@ -54,10 +56,10 @@ const rtcConfig = {
 // ============================================
 // DOM Elements
 // ============================================
-const localVideo = document.getElementById('localVideo');
-const remoteVideo = document.getElementById('remoteVideo');
+let videoContainer = null;
+let localVideo = null;
+let localVideoWrapper = null;
 let localVideoLabel = null;
-let remoteVideoLabel = null;
 const nameInput = document.getElementById('nameInput');
 const roomIdInput = document.getElementById('roomIdInput');
 const startVideoBtn = document.getElementById('startVideoBtn');
@@ -106,52 +108,122 @@ function updateUI(inCall) {
 }
 
 /**
- * Update video labels with user names
- * @param {string} localName - Local user's name
- * @param {string} remoteName - Remote user's name (optional)
+ * Create a video element for a remote user
+ * @param {string} socketId - Socket ID of the remote user
+ * @param {string} userName - Name of the remote user
+ * @returns {Object} Object containing video element, wrapper, and label
  */
-function updateVideoLabels(localName, remoteName = null) {
-    if (localVideoLabel && localName) {
-        localVideoLabel.textContent = localName || 'Your Video';
-    }
-    if (remoteVideoLabel) {
-        if (remoteName) {
-            remoteVideoLabel.textContent = remoteName;
-        } else {
-            remoteVideoLabel.textContent = 'Waiting for user...';
+function createRemoteVideoElement(socketId, userName) {
+    // Create wrapper
+    const wrapper = document.createElement('div');
+    wrapper.className = 'video-wrapper';
+    wrapper.dataset.socketId = socketId;
+    
+    // Create label
+    const label = document.createElement('div');
+    label.className = 'video-label';
+    label.textContent = userName || 'User';
+    wrapper.appendChild(label);
+    
+    // Create video element
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.id = `remote-video-${socketId}`;
+    wrapper.appendChild(video);
+    
+    // Add to container
+    videoContainer.appendChild(wrapper);
+    
+    return { videoElement: video, videoWrapper: wrapper, videoLabel: label };
+}
+
+/**
+ * Remove a remote video element
+ * @param {string} socketId - Socket ID of the remote user
+ */
+function removeRemoteVideoElement(socketId) {
+    const peerData = remotePeers.get(socketId);
+    if (peerData && peerData.videoWrapper) {
+        // Stop video stream
+        if (peerData.videoElement && peerData.videoElement.srcObject) {
+            peerData.videoElement.srcObject.getTracks().forEach(track => track.stop());
+            peerData.videoElement.srcObject = null;
         }
+        // Remove from DOM
+        peerData.videoWrapper.remove();
     }
 }
 
 /**
- * Clean up remote connection only (user stays in room)
+ * Update video grid layout based on number of users
  */
-function cleanupRemote() {
-    // Close current call
-    if (currentCall) {
-        currentCall.close();
-        currentCall = null;
+function updateVideoGrid() {
+    if (!videoContainer) return;
+    
+    const totalUsers = 1 + remotePeers.size; // 1 local + remote users
+    let gridColumns;
+    
+    if (totalUsers <= 2) {
+        gridColumns = 2;
+    } else if (totalUsers <= 4) {
+        gridColumns = 2;
+    } else if (totalUsers <= 6) {
+        gridColumns = 3;
+    } else {
+        gridColumns = 3; // Max 7 users = 3 columns
     }
+    
+    videoContainer.style.gridTemplateColumns = `repeat(${gridColumns}, 1fr)`;
+}
 
-    // Clear remote video
-    if (remoteVideo.srcObject) {
-        remoteVideo.srcObject = null;
+/**
+ * Clean up a specific remote peer connection
+ * @param {string} socketId - Socket ID of the peer to clean up
+ */
+function cleanupRemotePeer(socketId) {
+    const peerData = remotePeers.get(socketId);
+    if (!peerData) return;
+    
+    // Close call
+    if (peerData.call) {
+        try {
+            peerData.call.close();
+        } catch (e) {
+            console.warn('Error closing call:', e);
+        }
     }
+    
+    // Stop stream tracks
+    if (peerData.stream) {
+        peerData.stream.getTracks().forEach(track => track.stop());
+    }
+    
+    // Remove video element
+    removeRemoteVideoElement(socketId);
+    
+    // Remove from map
+    remotePeers.delete(socketId);
+    
+    // Update grid
+    updateVideoGrid();
+}
 
-    // Reset remote state
-    remoteStream = null;
-    remotePeerId = null;
-    remoteUserName = null;
-    iceCandidateQueue = [];
-
-    // Update video labels
-    updateVideoLabels(userName, null);
+/**
+ * Clean up all remote connections (user stays in room)
+ */
+function cleanupAllRemotePeers() {
+    const socketIds = Array.from(remotePeers.keys());
+    socketIds.forEach(socketId => cleanupRemotePeer(socketId));
 }
 
 /**
  * Clean up all media streams and connections (full cleanup)
  */
 function cleanup() {
+    // Clean up all remote peers
+    cleanupAllRemotePeers();
+    
     // Stop local stream tracks
     if (localStream) {
         localStream.getTracks().forEach(track => {
@@ -170,46 +242,33 @@ function cleanup() {
         screenStream = null;
     }
 
-    // Close current call
-    if (currentCall) {
-        currentCall.close();
-        currentCall = null;
-    }
-
     // Destroy peer connection
     if (peer) {
         peer.destroy();
         peer = null;
     }
 
-    // Clear video elements
-    if (localVideo.srcObject) {
+    // Clear local video
+    if (localVideo && localVideo.srcObject) {
         localVideo.srcObject = null;
-    }
-    if (remoteVideo.srcObject) {
-        remoteVideo.srcObject = null;
     }
 
     // Reset state
-    remoteStream = null;
-    remotePeerId = null;
-    remoteUserName = null;
     myPeerId = null;
     currentRoomId = null;
     isMuted = false;
     isCameraOff = false;
     isSharingScreen = false;
-    iceCandidateQueue = [];
 
     // Leave room on server
     if (socket && socket.connected && currentRoomId) {
         socket.emit('leave-room', { roomId: currentRoomId });
     }
 
-    // Reset video labels
-    updateVideoLabels(null, null);
-    if (localVideoLabel) localVideoLabel.textContent = 'Your Video';
-    if (remoteVideoLabel) remoteVideoLabel.textContent = 'Remote Video';
+    // Reset local video label
+    if (localVideoLabel) {
+        localVideoLabel.textContent = 'Your Video';
+    }
 
     updateUI(false);
     showStatus('Call ended. Ready for new call.', 'info');
@@ -248,65 +307,122 @@ function initializeSocket() {
 
         // Handle room joined event
         socket.on('room-joined', (data) => {
-            console.log('✅ Joined room:', data.roomId);
+            console.log('✅ Joined room:', data.roomId, `(${data.userCount}/${data.maxUsers} users)`);
             currentRoomId = data.roomId;
+            if (data.userCount >= data.maxUsers) {
+                showStatus(`Room is full (${data.userCount}/${data.maxUsers})`, 'info');
+            }
         });
 
-        // Handle existing users in room
+        // Handle room updated (user count changes)
+        socket.on('room-updated', (data) => {
+            console.log(`📊 Room updated: ${data.userCount}/${data.maxUsers} users`);
+            if (data.userCount >= data.maxUsers) {
+                showStatus(`Room is full (${data.userCount}/${data.maxUsers})`, 'info');
+            }
+        });
+
+        // Handle existing users in room (when joining)
         socket.on('room-users', (data) => {
             console.log('👥 Users in room:', data.users);
-            if (data.users.length > 0) {
-                // Another user is already in the room - wait for their PeerJS ID
-                const otherUser = data.users[0];
-                remoteUserName = otherUser.userName || 'User';
-                // Update remote video label
-                updateVideoLabels(userName, remoteUserName);
-                // They will send their peer-id via socket
+            if (data.users && data.users.length > 0) {
+                // Connect to each existing user
+                data.users.forEach(userData => {
+                    if (userData.peerId && myPeerId) {
+                        // Create video element for this user
+                        const videoElements = createRemoteVideoElement(userData.socketId, userData.userName);
+                        remotePeers.set(userData.socketId, {
+                            peerId: userData.peerId,
+                            userName: userData.userName || 'User',
+                            call: null,
+                            stream: null,
+                            videoElement: videoElements.videoElement,
+                            videoWrapper: videoElements.videoWrapper,
+                            videoLabel: videoElements.videoLabel
+                        });
+                        
+                        // Connect to this peer
+                        setTimeout(() => {
+                            connectToUser(userData.peerId, userData.socketId);
+                        }, 500);
+                    }
+                });
+                updateVideoGrid();
             }
         });
 
         // Handle new user joining
         socket.on('user-joined', (data) => {
-            console.log('👤 New user joined:', data.userId);
-            remoteUserName = data.userName || 'User';
-            // Update remote video label
-            updateVideoLabels(userName, remoteUserName);
-            // Wait for them to send their PeerJS ID
+            console.log('👤 New user joined:', data.userId, data.userName);
+            const userName = data.userName || 'User';
+            
+            // If we already have this peer, update the name
+            if (remotePeers.has(data.userId)) {
+                const peerData = remotePeers.get(data.userId);
+                peerData.userName = userName;
+                if (peerData.videoLabel) {
+                    peerData.videoLabel.textContent = userName;
+                }
+            } else {
+                // Create a temporary entry with user name (will be updated when peer-id arrives)
+                // We'll create the video element when peer-id arrives, but store the name now
+                // This is handled by checking if entry exists when peer-id arrives
+            }
         });
 
         // Handle PeerJS ID exchange
         socket.on('peer-id', (data) => {
-            console.log('🔑 Received PeerJS ID:', data.peerId);
-            if (data.peerId && myPeerId) {
-                remotePeerId = data.peerId;
-                // Update remote video label if we have the user name
-                if (remoteUserName) {
-                    updateVideoLabels(userName, remoteUserName);
+            console.log('🔑 Received PeerJS ID:', data.peerId, 'from socket:', data.socketId);
+            if (data.peerId && data.socketId && myPeerId) {
+                // Check if we already have this peer
+                if (!remotePeers.has(data.socketId)) {
+                    // Create video element for this user
+                    const videoElements = createRemoteVideoElement(data.socketId, 'User');
+                    remotePeers.set(data.socketId, {
+                        peerId: data.peerId,
+                        userName: 'User', // Will be updated when we get user info
+                        call: null,
+                        stream: null,
+                        videoElement: videoElements.videoElement,
+                        videoWrapper: videoElements.videoWrapper,
+                        videoLabel: videoElements.videoLabel
+                    });
+                    updateVideoGrid();
+                } else {
+                    // Update peer ID and user name if available
+                    const peerData = remotePeers.get(data.socketId);
+                    if (peerData) {
+                        peerData.peerId = data.peerId;
+                        // Update label if we have user name
+                        if (peerData.videoLabel && peerData.userName) {
+                            peerData.videoLabel.textContent = peerData.userName;
+                        }
+                    }
                 }
-                // Wait a bit for both peers to be ready, then connect
+                
+                // Connect to this peer
                 setTimeout(() => {
-                    connectToUser(data.peerId);
+                    connectToUser(data.peerId, data.socketId);
                 }, 500);
             }
         });
 
         // Handle user leaving
         socket.on('user-left', (data) => {
-            console.log('👋 User left:', data.userId);
-            if (remotePeerId === data.userId || remotePeerId) {
-                showStatus('Other user left. You can stay and wait for a new user to join...', 'info');
-                // Only cleanup remote connection, keep user in room
-                cleanupRemote();
+            console.log('👋 User left:', data.userId, `(${data.userCount}/${data.maxUsers} remaining)`);
+            if (remotePeers.has(data.userId)) {
+                cleanupRemotePeer(data.userId);
+                showStatus(`User left. ${data.userCount}/${data.maxUsers} users in room.`, 'info');
             }
         });
 
-
-        // Handle call ended
+        // Handle call ended (by another user)
         socket.on('call-ended', (data) => {
-            console.log('📴 Call ended by other user');
-            showStatus('Other user ended the call. You can stay and wait for a new user...', 'info');
-            // Only cleanup remote connection, keep user in room
-            cleanupRemote();
+            console.log('📴 Call ended by user:', data.userId);
+            if (remotePeers.has(data.userId)) {
+                cleanupRemotePeer(data.userId);
+                showStatus('User ended their call. You can stay and wait for others...', 'info');
+            }
         });
 
         // Handle errors
@@ -369,49 +485,94 @@ function initializePeer() {
             }
         });
 
-        // Handle incoming calls
+        // Handle incoming calls (for multiple users)
         peer.on('call', (call) => {
-            console.log('📞 Incoming call from:', call.peer);
+            console.log('📞 Incoming call from PeerJS ID:', call.peer);
+            
+            // Find which socket ID this peer ID belongs to
+            let targetSocketId = null;
+            for (const [socketId, peerData] of remotePeers.entries()) {
+                if (peerData.peerId === call.peer) {
+                    targetSocketId = socketId;
+                    break;
+                }
+            }
+            
+            // If we don't know this peer yet, try to find it or create entry
+            if (!targetSocketId) {
+                console.warn('⚠️ Received call from unknown peer:', call.peer);
+                // Answer anyway - we'll handle it when we get the socket ID
+            }
             
             // Answer the call with local stream (if available)
-            if (localStream) {
-                call.answer(localStream);
-            } else {
-                // Create empty stream if no media available
-                const emptyStream = new MediaStream();
-                call.answer(emptyStream);
-            }
+            const streamToSend = localStream || new MediaStream();
+            call.answer(streamToSend);
 
             // Handle remote stream
             call.on('stream', (stream) => {
-                console.log('✅ Received remote stream');
-                remoteStream = stream;
-                remoteVideo.srcObject = stream;
-                // Update remote video label with user name
-                updateVideoLabels(userName, remoteUserName || 'User');
-                showStatus('Call connected!', 'success');
-                updateUI(true);
+                console.log('✅ Received remote stream from PeerJS ID:', call.peer);
+                
+                // Find or create peer entry
+                if (targetSocketId && remotePeers.has(targetSocketId)) {
+                    const peerData = remotePeers.get(targetSocketId);
+                    peerData.call = call;
+                    peerData.stream = stream;
+                    peerData.videoElement.srcObject = stream;
+                    // Update label with user name if available
+                    if (peerData.videoLabel && peerData.userName) {
+                        peerData.videoLabel.textContent = peerData.userName;
+                    }
+                    console.log('✅ Stream assigned to socket:', targetSocketId);
+                } else {
+                    // Try to find by peer ID
+                    for (const [socketId, peerData] of remotePeers.entries()) {
+                        if (peerData.peerId === call.peer) {
+                            peerData.call = call;
+                            peerData.stream = stream;
+                            peerData.videoElement.srcObject = stream;
+                            // Update label with user name if available
+                            if (peerData.videoLabel && peerData.userName) {
+                                peerData.videoLabel.textContent = peerData.userName;
+                            }
+                            targetSocketId = socketId;
+                            console.log('✅ Stream assigned to socket (found by peer ID):', socketId);
+                            break;
+                        }
+                    }
+                }
+                
+                // Update UI if this is the first connection
+                if (remotePeers.size > 0) {
+                    updateUI(true);
+                }
             });
 
             // Handle call close
             call.on('close', () => {
-                console.log('📴 Call closed');
-                // Only cleanup remote if we're still in a room (user might want to stay)
-                if (currentRoomId) {
-                    showStatus('Call ended. Waiting for new user...', 'info');
-                    cleanupRemote();
-                } else {
-                    cleanup();
+                console.log('📴 Call closed from PeerJS ID:', call.peer);
+                // Find and cleanup this specific peer
+                if (targetSocketId && remotePeers.has(targetSocketId)) {
+                    if (currentRoomId) {
+                        cleanupRemotePeer(targetSocketId);
+                    } else {
+                        cleanup();
+                    }
                 }
             });
 
             // Handle call error
             call.on('error', (error) => {
-                console.error('❌ Call error:', error);
-                showStatus('Call error: ' + error.message, 'error');
+                console.error('❌ Call error from PeerJS ID:', call.peer, error);
+                if (targetSocketId && remotePeers.has(targetSocketId)) {
+                    // Retry connection after delay
+                    setTimeout(() => {
+                        const peerData = remotePeers.get(targetSocketId);
+                        if (peerData && peerData.peerId) {
+                            connectToUser(peerData.peerId, targetSocketId);
+                        }
+                    }, 3000);
+                }
             });
-
-            currentCall = call;
         });
 
         // Handle connection events
@@ -561,12 +722,38 @@ async function startCall(withVideo) {
             });
         }
 
+        // Create local video element if it doesn't exist
+        if (!localVideoWrapper) {
+            localVideoWrapper = document.createElement('div');
+            localVideoWrapper.className = 'video-wrapper';
+            localVideoWrapper.id = 'local-video-wrapper';
+            
+            localVideoLabel = document.createElement('div');
+            localVideoLabel.className = 'video-label';
+            localVideoLabel.textContent = userName || 'Your Video';
+            localVideoWrapper.appendChild(localVideoLabel);
+            
+            localVideo = document.createElement('video');
+            localVideo.autoplay = true;
+            localVideo.playsInline = true;
+            localVideo.muted = true; // Always mute local video
+            localVideo.id = 'localVideo';
+            localVideoWrapper.appendChild(localVideo);
+            
+            // Insert at the beginning of video container
+            videoContainer.insertBefore(localVideoWrapper, videoContainer.firstChild);
+        }
+        
+        // Update local video label
+        if (localVideoLabel) {
+            localVideoLabel.textContent = userName || 'Your Video';
+        }
+
         // Try to get user media (but continue even if it fails)
         try {
             localStream = await getUserMedia(withVideo, true);
-            if (localStream) {
+            if (localStream && localVideo) {
                 localVideo.srcObject = localStream;
-                localVideo.muted = true; // Mute local video to avoid feedback
             }
         } catch (mediaError) {
             console.warn('⚠️ Could not access camera/microphone:', mediaError);
@@ -576,20 +763,20 @@ async function startCall(withVideo) {
             try {
                 localStream = new MediaStream();
                 console.log('✅ Created empty media stream (no camera/mic)');
+                if (localVideo) {
+                    localVideo.srcObject = localStream;
+                }
                 showStatus('No camera/microphone available. You can still join and receive audio/video.', 'info');
             } catch (streamError) {
                 console.error('❌ Failed to create empty stream:', streamError);
             }
         }
 
-            // Join room on server
+        // Join room on server
         socket.emit('join-room', {
             roomId: roomId,
             userName: userName
         });
-
-        // Update local video label with user name
-        updateVideoLabels(userName, null);
 
         showStatus('Joining room...', 'info');
         
@@ -602,6 +789,7 @@ async function startCall(withVideo) {
         }
         
         updateUI(true);
+        updateVideoGrid();
 
         // Update button states based on available media
         if (!localStream || localStream.getAudioTracks().length === 0) {
@@ -623,22 +811,32 @@ async function startCall(withVideo) {
 /**
  * Connect to a specific user via PeerJS
  * @param {string} peerId - PeerJS ID of the user to connect to
+ * @param {string} socketId - Socket ID of the user to connect to
  */
-async function connectToUser(peerId) {
+async function connectToUser(peerId, socketId) {
     try {
         if (!peer || peer.destroyed) {
             console.warn('⚠️ Peer not initialized, waiting...');
-            setTimeout(() => connectToUser(peerId), 1000);
+            setTimeout(() => connectToUser(peerId, socketId), 1000);
             return;
         }
 
         if (!peer.open) {
             console.warn('⚠️ Peer not ready, waiting...');
-            peer.once('open', () => connectToUser(peerId));
+            peer.once('open', () => connectToUser(peerId, socketId));
             return;
         }
 
-        console.log('🔗 Connecting to user with PeerJS ID:', peerId);
+        // Check if we already have an active call with this peer
+        if (socketId && remotePeers.has(socketId)) {
+            const peerData = remotePeers.get(socketId);
+            if (peerData.call && peerData.call.open) {
+                console.log('✅ Already connected to socket:', socketId);
+                return;
+            }
+        }
+
+        console.log('🔗 Connecting to user - PeerJS ID:', peerId, 'Socket ID:', socketId);
 
         // Create call with local stream (or empty stream if no media)
         const streamToSend = localStream || new MediaStream();
@@ -647,30 +845,53 @@ async function connectToUser(peerId) {
         
         if (!call) {
             console.warn('⚠️ Could not create call, user may not be ready');
-            showStatus('Waiting for other user to be ready...', 'info');
-            setTimeout(() => connectToUser(peerId), 2000);
+            if (socketId && remotePeers.has(socketId)) {
+                setTimeout(() => connectToUser(peerId, socketId), 2000);
+            }
             return;
+        }
+
+        // Store call reference
+        if (socketId && remotePeers.has(socketId)) {
+            const peerData = remotePeers.get(socketId);
+            peerData.call = call;
         }
 
         // Handle remote stream
         call.on('stream', (stream) => {
-            console.log('✅ Received remote stream');
-            remoteStream = stream;
-            remoteVideo.srcObject = stream;
-            // Update remote video label with user name
-            updateVideoLabels(userName, remoteUserName || 'User');
-            showStatus('Call connected!', 'success');
-            updateUI(true);
+            console.log('✅ Received remote stream from PeerJS ID:', peerId);
+            
+            if (socketId && remotePeers.has(socketId)) {
+                const peerData = remotePeers.get(socketId);
+                peerData.stream = stream;
+                peerData.videoElement.srcObject = stream;
+                console.log('✅ Stream assigned to socket:', socketId);
+            } else {
+                // Try to find by peer ID
+                for (const [sid, peerData] of remotePeers.entries()) {
+                    if (peerData.peerId === peerId) {
+                        peerData.stream = stream;
+                        peerData.call = call;
+                        peerData.videoElement.srcObject = stream;
+                        console.log('✅ Stream assigned (found by peer ID):', sid);
+                        break;
+                    }
+                }
+            }
+            
+            // Update UI if needed
+            if (remotePeers.size > 0) {
+                updateUI(true);
+            }
         });
 
         // Handle call close
         call.on('close', () => {
-            console.log('📴 Call closed');
-            if (currentCall === call) {
-                // Only cleanup remote if we're still in a room (user might want to stay)
+            console.log('📴 Call closed - PeerJS ID:', peerId);
+            if (socketId && remotePeers.has(socketId)) {
                 if (currentRoomId) {
-                    showStatus('Call ended. Waiting for new user...', 'info');
-                    cleanupRemote();
+                    // Keep user in room, just cleanup this peer
+                    cleanupRemotePeer(socketId);
                 } else {
                     cleanup();
                 }
@@ -679,28 +900,30 @@ async function connectToUser(peerId) {
 
         // Handle call error
         call.on('error', (error) => {
-            console.error('❌ Call error:', error);
-            showStatus('Connection error. Trying to reconnect...', 'error');
-            // Try to reconnect after a delay
-            setTimeout(() => {
-                if (remoteUserId) {
-                    connectToUser(remoteUserId);
-                }
-            }, 3000);
+            console.error('❌ Call error - PeerJS ID:', peerId, error);
+            // Retry connection after delay if still in room
+            if (socketId && remotePeers.has(socketId) && currentRoomId) {
+                setTimeout(() => {
+                    const peerData = remotePeers.get(socketId);
+                    if (peerData && peerData.peerId) {
+                        connectToUser(peerData.peerId, socketId);
+                    }
+                }, 3000);
+            }
         });
-
-        currentCall = call;
 
     } catch (error) {
         console.error('❌ Error connecting to user:', error);
-        showStatus('Failed to connect. Please try again.', 'error');
         
-        // Retry connection
-        setTimeout(() => {
-            if (remotePeerId) {
-                connectToUser(remotePeerId);
-            }
-        }, 3000);
+        // Retry connection if still in room
+        if (socketId && remotePeers.has(socketId) && currentRoomId) {
+            setTimeout(() => {
+                const peerData = remotePeers.get(socketId);
+                if (peerData && peerData.peerId) {
+                    connectToUser(peerData.peerId, socketId);
+                }
+            }, 3000);
+        }
     }
 }
 
@@ -791,17 +1014,22 @@ async function toggleScreenShare() {
                 screenStream = null;
             }
 
-            // Restore local video stream
-            if (localStream && currentCall) {
-                // Replace video track in the call
+            // Restore local video stream in all calls
+            if (localStream) {
                 const videoTrack = localStream.getVideoTracks()[0];
-                if (videoTrack && currentCall.peerConnection) {
-                    const sender = currentCall.peerConnection.getSenders().find(s => {
-                        return s.track && s.track.kind === 'video';
+                if (videoTrack) {
+                    remotePeers.forEach((peerData, socketId) => {
+                        if (peerData.call && peerData.call.peerConnection) {
+                            const sender = peerData.call.peerConnection.getSenders().find(s => {
+                                return s.track && s.track.kind === 'video';
+                            });
+                            if (sender && videoTrack) {
+                                sender.replaceTrack(videoTrack).catch(err => {
+                                    console.warn('Error replacing track for', socketId, err);
+                                });
+                            }
+                        }
                     });
-                    if (sender && videoTrack) {
-                        sender.replaceTrack(videoTrack);
-                    }
                 }
             }
 
@@ -815,20 +1043,28 @@ async function toggleScreenShare() {
             try {
                 screenStream = await getScreenShare();
                 
-                if (screenStream && currentCall) {
-                    // Replace video track in the call
+                // Replace video track in all active calls
+                if (screenStream) {
                     const videoTrack = screenStream.getVideoTracks()[0];
-                    if (videoTrack && currentCall.peerConnection) {
-                        const sender = currentCall.peerConnection.getSenders().find(s => {
-                            return s.track && s.track.kind === 'video';
+                    if (videoTrack) {
+                        remotePeers.forEach((peerData, socketId) => {
+                            if (peerData.call && peerData.call.peerConnection) {
+                                const sender = peerData.call.peerConnection.getSenders().find(s => {
+                                    return s.track && s.track.kind === 'video';
+                                });
+                                if (sender && videoTrack) {
+                                    sender.replaceTrack(videoTrack).catch(err => {
+                                        console.warn('Error replacing track for', socketId, err);
+                                    });
+                                }
+                            }
                         });
-                        if (sender && videoTrack) {
-                            sender.replaceTrack(videoTrack);
-                        }
                     }
 
                     // Show screen share in local video
-                    localVideo.srcObject = screenStream;
+                    if (localVideo) {
+                        localVideo.srcObject = screenStream;
+                    }
 
                     // Handle screen share ending
                     screenStream.getVideoTracks()[0].onended = () => {
@@ -878,12 +1114,16 @@ function endCall() {
 window.addEventListener('DOMContentLoaded', () => {
     console.log('✅ Page loaded, initializing...');
     
-    // Initialize video label references
-    const videoWrappers = document.querySelectorAll('.video-wrapper');
-    if (videoWrappers.length >= 2) {
-        localVideoLabel = videoWrappers[0].querySelector('.video-label');
-        remoteVideoLabel = videoWrappers[1].querySelector('.video-label');
+    // Initialize video container reference
+    videoContainer = document.querySelector('.video-container') || document.getElementById('videoContainer');
+    if (!videoContainer) {
+        console.error('❌ Video container not found!');
+        return;
     }
+    
+    // Clear any existing video elements (they will be created dynamically)
+    const existingVideos = videoContainer.querySelectorAll('.video-wrapper');
+    existingVideos.forEach(video => video.remove());
     
     // Initialize socket connection
     initializeSocket();
@@ -898,3 +1138,4 @@ window.addEventListener('DOMContentLoaded', () => {
 window.addEventListener('beforeunload', () => {
     cleanup();
 });
+
