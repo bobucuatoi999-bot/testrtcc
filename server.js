@@ -46,6 +46,14 @@ const roomMessages = new Map();
 // Format: { socketId: { count, resetTime } }
 const userMessageCounts = new Map();
 
+// Store room admins (first user who creates room)
+// Format: { roomId: socketId }
+const roomAdmins = new Map();
+
+// Store room passwords
+// Format: { roomId: password }
+const roomPasswords = new Map();
+
 // Chat configuration
 const MAX_MESSAGES_PER_ROOM = 100;        // Maximum messages per room (FIFO cleanup)
 const MAX_MESSAGE_LENGTH = 500;           // Maximum characters per message
@@ -67,7 +75,7 @@ io.on('connection', (socket) => {
   // ============================================
   socket.on('join-room', (data) => {
     try {
-      const { roomId, userName } = data || {};
+      const { roomId, userName, password } = data || {};
       
       // Validate roomId
       if (!roomId || typeof roomId !== 'string') {
@@ -81,6 +89,21 @@ io.on('connection', (socket) => {
         console.log(`👤 User ${socket.id} set name: ${userName}`);
       }
 
+      // Check if room has password
+      const roomPassword = roomPasswords.get(roomId);
+      if (roomPassword) {
+        // Room has password, validate it
+        if (!password || password !== roomPassword) {
+          socket.emit('error', { 
+            message: 'Incorrect password. Please enter the correct password to join.',
+            code: 'WRONG_PASSWORD'
+          });
+          console.log(`❌ User ${socket.id} failed to join room ${roomId} - wrong password`);
+          return;
+        }
+        console.log(`✅ User ${socket.id} provided correct password for room ${roomId}`);
+      }
+
       // Check room capacity
       const currentRoomUsers = rooms.get(roomId);
       if (currentRoomUsers && currentRoomUsers.size >= MAX_USERS_PER_ROOM) {
@@ -90,6 +113,10 @@ io.on('connection', (socket) => {
         console.log(`❌ Room ${roomId} is full (${currentRoomUsers.size}/${MAX_USERS_PER_ROOM})`);
         return;
       }
+
+      // Check if this is a new room (first user)
+      const isNewRoom = !rooms.has(roomId) || rooms.get(roomId).size === 0;
+      const isAdmin = isNewRoom;
 
       // Leave any existing rooms
       if (socket.rooms) {
@@ -115,16 +142,25 @@ io.on('connection', (socket) => {
       }
       rooms.get(roomId).add(socket.id);
       
+      // Set admin if this is a new room
+      if (isAdmin) {
+        roomAdmins.set(roomId, socket.id);
+        console.log(`👑 User ${socket.id} is now admin of room ${roomId}`);
+      }
+      
       const roomUserCount = rooms.get(roomId).size;
+      const adminSocketId = roomAdmins.get(roomId);
 
-      console.log(`📥 User ${socket.id} joined room: ${roomId}`);
+      console.log(`📥 User ${socket.id} joined room: ${roomId}${isAdmin ? ' (Admin)' : ''}`);
       
       // Notify the user they've successfully joined
       socket.emit('room-joined', { 
         roomId,
         socketId: socket.id,
         userCount: roomUserCount,
-        maxUsers: MAX_USERS_PER_ROOM
+        maxUsers: MAX_USERS_PER_ROOM,
+        isAdmin: isAdmin,
+        hasPassword: !!roomPassword
       });
 
       // Get all users in the room (excluding the current user)
@@ -135,7 +171,8 @@ io.on('connection', (socket) => {
         const usersWithNames = roomUsers.map(id => ({
           socketId: id,
           userName: userNames.get(id) || 'User',
-          peerId: peerIds.get(id) || null
+          peerId: peerIds.get(id) || null,
+          isAdmin: id === adminSocketId
         }));
         socket.emit('room-users', { users: usersWithNames });
         console.log(`👥 Room ${roomId} has ${roomUsers.length} other user(s) (${roomUserCount}/${MAX_USERS_PER_ROOM} total)`);
@@ -146,7 +183,8 @@ io.on('connection', (socket) => {
         userId: socket.id,
         userName: userName || 'User',
         userCount: roomUserCount,
-        maxUsers: MAX_USERS_PER_ROOM
+        maxUsers: MAX_USERS_PER_ROOM,
+        isAdmin: isAdmin
       });
 
       // Send my PeerJS ID if I have one (send to all existing users)
@@ -401,6 +439,15 @@ io.on('connection', (socket) => {
               roomMessages.delete(roomId);
               console.log(`🗑️  Chat messages deleted for empty room ${roomId}`);
             }
+            // Clean up admin and password when room is empty
+            if (roomAdmins.has(roomId)) {
+              roomAdmins.delete(roomId);
+              console.log(`🗑️  Admin cleared for empty room ${roomId}`);
+            }
+            if (roomPasswords.has(roomId)) {
+              roomPasswords.delete(roomId);
+              console.log(`🗑️  Password cleared for empty room ${roomId}`);
+            }
             rooms.delete(roomId);
             console.log(`🗑️  Room ${roomId} cleaned up (empty)`);
           }
@@ -454,11 +501,124 @@ io.on('connection', (socket) => {
             roomMessages.delete(roomId);
             console.log(`🗑️  Chat messages deleted for empty room ${roomId}`);
           }
+          // Clean up admin and password when room is empty
+          if (roomAdmins.has(roomId)) {
+            roomAdmins.delete(roomId);
+            console.log(`🗑️  Admin cleared for empty room ${roomId}`);
+          }
+          if (roomPasswords.has(roomId)) {
+            roomPasswords.delete(roomId);
+            console.log(`🗑️  Password cleared for empty room ${roomId}`);
+          }
           rooms.delete(roomId);
           console.log(`🗑️  Room ${roomId} cleaned up (empty)`);
         }
       }
     });
+  });
+
+  // ============================================
+  // Handle Room Password Management (Admin Only)
+  // ============================================
+  socket.on('set-room-password', (data) => {
+    try {
+      const { roomId, password } = data || {};
+      
+      // Validate inputs
+      if (!roomId || typeof roomId !== 'string') {
+        socket.emit('error', { message: 'Invalid room ID' });
+        return;
+      }
+
+      if (!password || typeof password !== 'string' || password.trim().length === 0) {
+        socket.emit('error', { message: 'Password cannot be empty' });
+        return;
+      }
+
+      // Check if user is admin of this room
+      const adminSocketId = roomAdmins.get(roomId);
+      if (adminSocketId !== socket.id) {
+        socket.emit('error', { 
+          message: 'Only the room admin can set the password.',
+          code: 'NOT_ADMIN'
+        });
+        console.log(`❌ User ${socket.id} tried to set password for room ${roomId} but is not admin`);
+        return;
+      }
+
+      // Validate user is in the room
+      if (!rooms.has(roomId) || !rooms.get(roomId).has(socket.id)) {
+        socket.emit('error', { message: 'You are not in this room' });
+        return;
+      }
+
+      // Set password
+      roomPasswords.set(roomId, password.trim());
+      console.log(`🔒 Admin ${socket.id} set password for room ${roomId}`);
+
+      // Notify all users in the room
+      io.to(roomId).emit('room-password-updated', {
+        roomId: roomId,
+        hasPassword: true
+      });
+
+      socket.emit('password-set-success', {
+        roomId: roomId,
+        message: 'Password set successfully'
+      });
+
+    } catch (error) {
+      console.error(`❌ Error setting room password: ${error.message}`);
+      socket.emit('error', { message: 'Failed to set password', error: error.message });
+    }
+  });
+
+  socket.on('reset-room-password', (data) => {
+    try {
+      const { roomId } = data || {};
+      
+      // Validate inputs
+      if (!roomId || typeof roomId !== 'string') {
+        socket.emit('error', { message: 'Invalid room ID' });
+        return;
+      }
+
+      // Check if user is admin of this room
+      const adminSocketId = roomAdmins.get(roomId);
+      if (adminSocketId !== socket.id) {
+        socket.emit('error', { 
+          message: 'Only the room admin can reset the password.',
+          code: 'NOT_ADMIN'
+        });
+        console.log(`❌ User ${socket.id} tried to reset password for room ${roomId} but is not admin`);
+        return;
+      }
+
+      // Validate user is in the room
+      if (!rooms.has(roomId) || !rooms.get(roomId).has(socket.id)) {
+        socket.emit('error', { message: 'You are not in this room' });
+        return;
+      }
+
+      // Remove password
+      roomPasswords.delete(roomId);
+      console.log(`🔓 Admin ${socket.id} removed password for room ${roomId}`);
+
+      // Notify all users in the room
+      io.to(roomId).emit('room-password-updated', {
+        roomId: roomId,
+        hasPassword: false
+      });
+
+      socket.emit('password-reset-success', {
+        roomId: roomId,
+        message: 'Password removed successfully'
+      });
+
+    } catch (error) {
+      console.error(`❌ Error resetting room password: ${error.message}`);
+      socket.emit('error', { message: 'Failed to reset password', error: error.message });
+    }
   });
 
   // ============================================

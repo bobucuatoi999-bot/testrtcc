@@ -16,6 +16,9 @@ let isSharingScreen = false;   // Screen sharing state
 let currentRoomId = null;       // Currently joined room ID
 let userName = null;            // User's name
 let myPeerId = null;             // My PeerJS ID
+let isRoomAdmin = false;        // Whether current user is room admin
+let roomHasPassword = false;    // Whether room has password
+let pendingPassword = null;     // Password to use when joining (if needed)
 
 // Multi-user support: Map of remote peers
 // Format: { socketId: { peerId, userName, call, stream, videoElement, videoWrapper, videoLabel } }
@@ -233,12 +236,21 @@ function updateParticipantsList() {
     // Add local user
     const localItem = document.createElement('div');
     localItem.className = 'participant-item';
+    const adminBadge = isRoomAdmin ? `
+        <span class="participant-admin">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+            </svg>
+            Admin
+        </span>
+    ` : '';
     localItem.innerHTML = `
         <div class="participant-info">
             <div class="participant-avatar">${(userName || 'You').charAt(0).toUpperCase()}</div>
             <div>
                 <span class="participant-name">${userName || 'You'}</span>
                 <span class="participant-host">(You)</span>
+                ${adminBadge}
             </div>
         </div>
         <div class="participant-status">
@@ -256,11 +268,20 @@ function updateParticipantsList() {
         item.className = 'participant-item';
         const isRemoteMuted = peerData.stream && peerData.stream.getAudioTracks().length > 0 && 
                              !peerData.stream.getAudioTracks()[0].enabled;
+        const remoteAdminBadge = peerData.isAdmin ? `
+            <span class="participant-admin">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                </svg>
+                Admin
+            </span>
+        ` : '';
         item.innerHTML = `
             <div class="participant-info">
                 <div class="participant-avatar">${(peerData.userName || 'User').charAt(0).toUpperCase()}</div>
                 <div>
                     <span class="participant-name">${peerData.userName || 'User'}</span>
+                    ${remoteAdminBadge}
                 </div>
             </div>
             <div class="participant-status">
@@ -272,6 +293,20 @@ function updateParticipantsList() {
         `;
         participantsList.appendChild(item);
     });
+    
+    // Show/hide admin controls
+    const adminControls = document.getElementById('adminControls');
+    if (adminControls) {
+        adminControls.style.display = isRoomAdmin ? 'flex' : 'none';
+    }
+    
+    // Update password button visibility
+    const setPasswordBtn = document.getElementById('setPasswordBtn');
+    const resetPasswordBtn = document.getElementById('resetPasswordBtn');
+    if (setPasswordBtn && resetPasswordBtn) {
+        setPasswordBtn.style.display = roomHasPassword ? 'none' : 'flex';
+        resetPasswordBtn.style.display = roomHasPassword ? 'flex' : 'none';
+    }
 }
 
 /**
@@ -544,6 +579,11 @@ function cleanup() {
         chatMessages.innerHTML = '';
         updateChatMessageCount();
     }
+    
+    // Reset admin and password status
+    isRoomAdmin = false;
+    roomHasPassword = false;
+    pendingPassword = null;
 
     // Leave room on server
     if (socket && socket.connected && currentRoomId) {
@@ -595,11 +635,22 @@ function initializeSocket() {
             console.log('✅ Joined room:', data.roomId, `(${data.userCount}/${data.maxUsers} users)`);
             currentRoomId = data.roomId;
             
+            // Set admin status
+            isRoomAdmin = data.isAdmin || false;
+            roomHasPassword = data.hasPassword || false;
+            
             // Display meeting ID
             displayMeetingId(data.roomId);
             
+            // Update participants list to show admin badge and controls
+            updateParticipantsList();
+            
             if (data.userCount >= data.maxUsers) {
                 showStatus(`Room is full (${data.userCount}/${data.maxUsers})`, 'info');
+            }
+            
+            if (isRoomAdmin) {
+                showStatus('You are the room admin', 'info');
             }
         });
 
@@ -623,6 +674,7 @@ function initializeSocket() {
                         remotePeers.set(userData.socketId, {
                             peerId: userData.peerId,
                             userName: userData.userName || 'User',
+                            isAdmin: userData.isAdmin || false,
                             call: null,
                             stream: null,
                             videoElement: videoElements.videoElement,
@@ -648,10 +700,11 @@ function initializeSocket() {
             console.log('👤 New user joined:', data.userId, data.userName);
             const remoteUserName = data.userName || 'User';
             
-            // If we already have this peer, update the name
+            // If we already have this peer, update the name and admin status
             if (remotePeers.has(data.userId)) {
                 const peerData = remotePeers.get(data.userId);
                 peerData.userName = remoteUserName;
+                peerData.isAdmin = data.isAdmin || false;
                 updateVideoLabel(peerData);
                 // Update placeholder avatar if visible
                 if (peerData.placeholder) {
@@ -660,6 +713,20 @@ function initializeSocket() {
                         avatar.textContent = remoteUserName.charAt(0).toUpperCase();
                     }
                 }
+                updateParticipantsList();
+            } else {
+                // Store admin status for when peer-id arrives
+                remotePeers.set(data.userId, {
+                    userName: remoteUserName,
+                    isAdmin: data.isAdmin || false,
+                    peerId: null,
+                    call: null,
+                    stream: null,
+                    videoElement: null,
+                    videoWrapper: null,
+                    videoLabel: null,
+                    placeholder: null
+                });
             }
             // Otherwise, we'll create the entry when peer-id arrives
         });
@@ -675,6 +742,7 @@ function initializeSocket() {
                     remotePeers.set(data.socketId, {
                         peerId: data.peerId,
                         userName: 'User', // Will be updated when we get user info
+                        isAdmin: false, // Will be updated when we get user info
                         call: null,
                         stream: null,
                         videoElement: videoElements.videoElement,
@@ -684,10 +752,14 @@ function initializeSocket() {
                     });
                     updateVideoGrid();
                 } else {
-                    // Update peer ID and user name if available
+                    // Update peer ID and user name if available (preserve isAdmin if already set)
                     const peerData = remotePeers.get(data.socketId);
                     if (peerData) {
                         peerData.peerId = data.peerId;
+                        // Preserve isAdmin if it was already set
+                        if (peerData.isAdmin === undefined) {
+                            peerData.isAdmin = false;
+                        }
                         // Update label if we have user name
                         updateVideoLabel(peerData);
                     }
@@ -759,6 +831,17 @@ function initializeSocket() {
         socket.on('error', (error) => {
             console.error('❌ Server error:', error);
             
+            // Handle password errors
+            if (error.code === 'WRONG_PASSWORD' || (error.message && error.message.includes('password'))) {
+                showPasswordModal();
+                const errorDiv = document.getElementById('passwordError');
+                if (errorDiv) {
+                    errorDiv.textContent = error.message || 'Incorrect password. Please try again.';
+                    errorDiv.style.display = 'block';
+                }
+                return;
+            }
+            
             // Show error message but don't interrupt chat if it's a rate limit error
             if (error.message && error.message.includes('Rate limit')) {
                 // Show temporary error in chat input area
@@ -770,8 +853,34 @@ function initializeSocket() {
                         chatInput.placeholder = originalPlaceholder;
                     }, 3000);
                 }
+                return;
+            }
+            
+            showStatus(error.message || 'An error occurred', 'error');
+        });
+        
+        // Handle password set success
+        socket.on('password-set-success', (data) => {
+            roomHasPassword = true;
+            updateParticipantsList();
+            showStatus('Password set successfully', 'success');
+        });
+        
+        // Handle password reset success
+        socket.on('password-reset-success', (data) => {
+            roomHasPassword = false;
+            updateParticipantsList();
+            showStatus('Password removed successfully', 'success');
+        });
+        
+        // Handle room password updated (broadcast to all users)
+        socket.on('room-password-updated', (data) => {
+            roomHasPassword = data.hasPassword || false;
+            updateParticipantsList();
+            if (data.hasPassword) {
+                showStatus('Room password has been set', 'info');
             } else {
-            showStatus(error.message || 'Server error occurred', 'error');
+                showStatus('Room password has been removed', 'info');
             }
         });
 
@@ -1032,6 +1141,175 @@ async function getScreenShare() {
  * Start a call (video or voice)
  * @param {boolean} withVideo - Whether to start with video
  */
+/**
+ * Password Modal Functions
+ */
+function showPasswordModal() {
+    const modal = document.getElementById('passwordModal');
+    const input = document.getElementById('passwordInput');
+    const error = document.getElementById('passwordError');
+    if (modal && input) {
+        modal.style.display = 'flex';
+        input.value = '';
+        input.focus();
+        if (error) error.style.display = 'none';
+    }
+}
+
+function closePasswordModal() {
+    const modal = document.getElementById('passwordModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+function togglePasswordVisibility() {
+    const input = document.getElementById('passwordInput');
+    const showIcon = document.getElementById('passwordShowIcon');
+    const hideIcon = document.getElementById('passwordHideIcon');
+    if (input && showIcon && hideIcon) {
+        if (input.type === 'password') {
+            input.type = 'text';
+            showIcon.style.display = 'block';
+            hideIcon.style.display = 'none';
+        } else {
+            input.type = 'password';
+            showIcon.style.display = 'none';
+            hideIcon.style.display = 'block';
+        }
+    }
+}
+
+function submitPassword() {
+    const input = document.getElementById('passwordInput');
+    const error = document.getElementById('passwordError');
+    if (!input) return;
+    
+    const password = input.value.trim();
+    if (!password) {
+        if (error) {
+            error.textContent = 'Please enter a password';
+            error.style.display = 'block';
+        }
+        return;
+    }
+    
+    pendingPassword = password;
+    closePasswordModal();
+    
+    // Retry joining with password
+    const urlParams = new URLSearchParams(window.location.search);
+    const video = urlParams.get('video') === 'true';
+    startCall(video);
+}
+
+/**
+ * Admin Password Modal Functions
+ */
+function openSetPasswordModal() {
+    const modal = document.getElementById('adminPasswordModal');
+    const title = document.getElementById('adminPasswordModalTitle');
+    const description = document.getElementById('adminPasswordModalDescription');
+    const input = document.getElementById('adminPasswordInput');
+    const submitBtn = document.getElementById('adminPasswordSubmitBtn');
+    const error = document.getElementById('adminPasswordError');
+    
+    if (modal && title && description && input && submitBtn) {
+        title.textContent = 'Set Room Password';
+        description.textContent = 'Set a password to protect this room. Users will need to enter this password to join.';
+        submitBtn.textContent = 'Set Password';
+        submitBtn.onclick = submitAdminPassword;
+        input.value = '';
+        input.focus();
+        if (error) error.style.display = 'none';
+        modal.style.display = 'flex';
+    }
+}
+
+function openResetPasswordModal() {
+    const modal = document.getElementById('adminPasswordModal');
+    const title = document.getElementById('adminPasswordModalTitle');
+    const description = document.getElementById('adminPasswordModalDescription');
+    const input = document.getElementById('adminPasswordInput');
+    const submitBtn = document.getElementById('adminPasswordSubmitBtn');
+    const error = document.getElementById('adminPasswordError');
+    
+    if (modal && title && description && input && submitBtn) {
+        title.textContent = 'Remove Room Password';
+        description.textContent = 'Are you sure you want to remove the password? The room will become open to anyone with the meeting ID.';
+        submitBtn.textContent = 'Remove Password';
+        submitBtn.onclick = resetAdminPassword;
+        input.value = '';
+        input.style.display = 'none';
+        if (error) error.style.display = 'none';
+        modal.style.display = 'flex';
+    }
+}
+
+function closeAdminPasswordModal() {
+    const modal = document.getElementById('adminPasswordModal');
+    const input = document.getElementById('adminPasswordInput');
+    if (modal) {
+        modal.style.display = 'none';
+        if (input) {
+            input.style.display = 'block';
+            input.type = 'password';
+        }
+    }
+}
+
+function toggleAdminPasswordVisibility() {
+    const input = document.getElementById('adminPasswordInput');
+    const showIcon = document.getElementById('adminPasswordShowIcon');
+    const hideIcon = document.getElementById('adminPasswordHideIcon');
+    if (input && showIcon && hideIcon) {
+        if (input.type === 'password') {
+            input.type = 'text';
+            showIcon.style.display = 'block';
+            hideIcon.style.display = 'none';
+        } else {
+            input.type = 'password';
+            showIcon.style.display = 'none';
+            hideIcon.style.display = 'block';
+        }
+    }
+}
+
+function submitAdminPassword() {
+    const input = document.getElementById('adminPasswordInput');
+    const error = document.getElementById('adminPasswordError');
+    
+    if (!input || !currentRoomId || !socket) return;
+    
+    const password = input.value.trim();
+    if (!password) {
+        if (error) {
+            error.textContent = 'Please enter a password';
+            error.style.display = 'block';
+        }
+        return;
+    }
+    
+    // Send password to server
+    socket.emit('set-room-password', {
+        roomId: currentRoomId,
+        password: password
+    });
+    
+    closeAdminPasswordModal();
+}
+
+function resetAdminPassword() {
+    if (!currentRoomId || !socket) return;
+    
+    // Send reset password to server
+    socket.emit('reset-room-password', {
+        roomId: currentRoomId
+    });
+    
+    closeAdminPasswordModal();
+}
+
 async function startCall(withVideo) {
     try {
         // Get user name and room ID from inputs or URL parameters
@@ -1170,8 +1448,12 @@ async function startCall(withVideo) {
             // Join room on server
         socket.emit('join-room', {
             roomId: roomId,
-            userName: userName
+            userName: userName,
+            password: pendingPassword || undefined
         });
+        
+        // Clear pending password after use
+        pendingPassword = null;
 
         showStatus('Joining room...', 'info');
         

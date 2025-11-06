@@ -74,6 +74,21 @@
                 <div class="panel-content" id="participantsList">
                     <!-- Participants list will be added here -->
                 </div>
+                <!-- Admin Controls (only visible to admin) -->
+                <div id="adminControls" class="panel-footer admin-controls" style="display: none;">
+                    <button id="setPasswordBtn" class="btn btn-secondary btn-sm" onclick="openSetPasswordModal()">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                        </svg>
+                        <span>Set Password</span>
+                    </button>
+                    <button id="resetPasswordBtn" class="btn btn-secondary btn-sm" onclick="openResetPasswordModal()" style="display: none;">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
+                        </svg>
+                        <span>Remove Password</span>
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -135,6 +150,74 @@
 
         <!-- Status Display -->
         <div id="status" class="status-message"></div>
+
+        <!-- Password Modal -->
+        <div id="passwordModal" class="modal-overlay" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Room Password Required</h3>
+                    <button class="modal-close" onclick="closePasswordModal()">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-description">This room is protected by a password. Please enter the password to join.</p>
+                    <div class="modal-input-group">
+                        <input type="password" id="passwordInput" placeholder="Enter password..." class="modal-input" onkeypress="if(event.key === 'Enter') submitPassword()">
+                        <button type="button" class="password-toggle" onclick="togglePasswordVisibility()">
+                            <svg id="passwordShowIcon" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            <svg id="passwordHideIcon" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div id="passwordError" class="modal-error" style="display: none;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closePasswordModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="submitPassword()">Join Room</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Admin Password Modal -->
+        <div id="adminPasswordModal" class="modal-overlay" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="adminPasswordModalTitle">Set Room Password</h3>
+                    <button class="modal-close" onclick="closeAdminPasswordModal()">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-description" id="adminPasswordModalDescription">Set a password to protect this room. Users will need to enter this password to join.</p>
+                    <div class="modal-input-group">
+                        <input type="password" id="adminPasswordInput" placeholder="Enter password..." class="modal-input" onkeypress="if(event.key === 'Enter') submitAdminPassword()">
+                        <button type="button" class="password-toggle" onclick="toggleAdminPasswordVisibility()">
+                            <svg id="adminPasswordShowIcon" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            <svg id="adminPasswordHideIcon" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div id="adminPasswordError" class="modal-error" style="display: none;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeAdminPasswordModal()">Cancel</button>
+                    <button class="btn btn-primary" id="adminPasswordSubmitBtn" onclick="submitAdminPassword()">Set Password</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Load libraries -->
