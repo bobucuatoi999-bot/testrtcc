@@ -684,15 +684,59 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
 
                 // Store consumer based on kind
                 if (kind === 'audio') {
+                    // Close existing audio consumer if any
+                    if (remoteUser.audioConsumer) {
+                        try {
+                            remoteUser.audioConsumer.close();
+                        } catch (e) {
+                            console.warn('Error closing old audio consumer:', e);
+                        }
+                    }
+                    
                     remoteUser.audioConsumer = consumer;
-                    // Create audio element (hidden) to play audio
-                    const audioElement = document.createElement('audio');
-                    audioElement.autoplay = true;
-                    audioElement.srcObject = new MediaStream([consumer.track]);
-                    audioElement.style.display = 'none';
-                    document.body.appendChild(audioElement);
-                    remoteUser.audioElement = audioElement;
+                    
+                    // Create or update audio element (hidden) to play audio
+                    if (remoteUser.audioElement) {
+                        // Update existing audio element
+                        const existingStream = remoteUser.audioElement.srcObject;
+                        if (existingStream && existingStream instanceof MediaStream) {
+                            const existingTrack = existingStream.getAudioTracks()[0];
+                            if (existingTrack) {
+                                existingStream.removeTrack(existingTrack);
+                                existingTrack.stop();
+                            }
+                            existingStream.addTrack(consumer.track);
+                        } else {
+                            remoteUser.audioElement.srcObject = new MediaStream([consumer.track]);
+                        }
+                    } else {
+                        // Create new audio element
+                        const audioElement = document.createElement('audio');
+                        audioElement.autoplay = true;
+                        audioElement.playsInline = true;
+                        audioElement.srcObject = new MediaStream([consumer.track]);
+                        audioElement.style.display = 'none';
+                        audioElement.volume = 1.0;
+                        document.body.appendChild(audioElement);
+                        remoteUser.audioElement = audioElement;
+                        
+                        // Handle audio errors
+                        audioElement.addEventListener('error', (e) => {
+                            console.warn('Audio element error:', e);
+                        });
+                    }
+                    
+                    console.log(`✅ Audio consumer set up for ${remoteUser.userName || socketId}`);
                 } else if (kind === 'video') {
+                    // Close existing video consumer if any
+                    if (remoteUser.videoConsumer) {
+                        try {
+                            remoteUser.videoConsumer.close();
+                        } catch (e) {
+                            console.warn('Error closing old video consumer:', e);
+                        }
+                    }
+                    
                     remoteUser.videoConsumer = consumer;
                     // Create or update video element
                     createRemoteVideoElement(socketId, remoteUser, consumer.track);
@@ -705,8 +749,22 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
 
             } catch (error) {
                 console.error(`❌ Error consuming producer ${producerId}:`, error);
+                // Retry consuming after a delay
+                if (kind === 'video') {
+                    console.log(`🔄 Retrying video consumption for ${socketId}...`);
+                    setTimeout(() => {
+                        consumeProducer(producerId, socketId, kind, remoteUserName);
+                    }, 2000);
+                }
             }
-        });
+        } catch (error) {
+            console.error(`❌ Error waiting for consumed event for producer ${producerId}:`, error);
+            // Retry the whole consumption process
+            setTimeout(() => {
+                console.log(`🔄 Retrying consumption for producer ${producerId}...`);
+                consumeProducer(producerId, socketId, kind, remoteUserName);
+            }, 3000);
+        }
 
     } catch (error) {
         console.error(`❌ Error setting up consumer for producer ${producerId}:`, error);
@@ -768,17 +826,67 @@ function createRemoteVideoElement(socketId, remoteUser, track) {
         }
 
         // Update video stream
-        const stream = new MediaStream([track]);
+        // Check if we already have a stream for this element
+        const existingStream = remoteUser.videoElement?.srcObject;
+        let stream;
+        
+        if (existingStream && existingStream instanceof MediaStream) {
+            // Update existing stream by replacing the video track
+            const existingVideoTrack = existingStream.getVideoTracks()[0];
+            if (existingVideoTrack) {
+                existingStream.removeTrack(existingVideoTrack);
+                existingVideoTrack.stop();
+            }
+            existingStream.addTrack(track);
+            stream = existingStream;
+        } else {
+            // Create new stream
+            stream = new MediaStream([track]);
+        }
+        
         if (remoteUser.videoElement) {
+            // Stop any pending play() operations
+            remoteUser.videoElement.pause();
+            
+            // Set srcObject
             remoteUser.videoElement.srcObject = stream;
             remoteUser.videoElement.style.display = 'block';
-            remoteUser.videoElement.play().catch(err => {
-                console.error('Error playing remote video:', err);
-            });
             
-            // Hide placeholder
-            if (remoteUser.placeholder) {
-                remoteUser.placeholder.style.display = 'none';
+            // Wait for metadata to load before playing
+            const playVideo = () => {
+                remoteUser.videoElement.play()
+                    .then(() => {
+                        console.log(`✅ Remote video playing for ${remoteUser.userName || socketId}`);
+                        // Hide placeholder once video is playing
+                        if (remoteUser.placeholder) {
+                            remoteUser.placeholder.style.display = 'none';
+                        }
+                    })
+                    .catch(err => {
+                        // Ignore AbortError (interrupted by new load) - it's normal
+                        if (err.name !== 'AbortError') {
+                            console.warn(`⚠️ Error playing remote video for ${remoteUser.userName || socketId}:`, err);
+                            // Retry after a short delay
+                            setTimeout(() => {
+                                if (remoteUser.videoElement && remoteUser.videoElement.srcObject) {
+                                    remoteUser.videoElement.play().catch(() => {
+                                        // Ignore retry errors
+                                    });
+                                }
+                            }, 500);
+                        }
+                    });
+            };
+            
+            // Wait for metadata or play immediately if already loaded
+            if (remoteUser.videoElement.readyState >= 2) {
+                // Metadata already loaded
+                playVideo();
+            } else {
+                // Wait for metadata
+                remoteUser.videoElement.addEventListener('loadedmetadata', playVideo, { once: true });
+                // Also try to play after a short delay as fallback
+                setTimeout(playVideo, 100);
             }
         }
 
