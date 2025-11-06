@@ -12,6 +12,18 @@
         <div class="meeting-main">
             <!-- Video grid -->
             <div class="video-grid-container">
+                <!-- Meeting ID Display -->
+                <div id="meetingIdDisplay" class="meeting-id-display">
+                    <div class="meeting-id-content">
+                        <span class="meeting-id-label">Meeting ID:</span>
+                        <span id="meetingIdValue" class="meeting-id-value">-</span>
+                        <button id="copyMeetingIdBtn" class="copy-meeting-id-btn" onclick="copyMeetingId()" title="Copy Meeting ID">
+                            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
                 <div class="video-grid" id="videoContainer">
                     <!-- Video tiles will be added dynamically -->
                 </div>
@@ -20,7 +32,17 @@
             <!-- Side panels (hidden by default) -->
             <div id="chatPanel" class="side-panel" style="display: none;">
                 <div class="panel-header">
-                    <h3>In-Meeting Chat</h3>
+                    <div class="panel-header-content">
+                        <div class="panel-header-icon">
+                            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                            </svg>
+                        </div>
+                        <div class="panel-header-text">
+                            <h3>Chat</h3>
+                            <span id="chatMessageCount" class="panel-header-subtitle">0 messages</span>
+                        </div>
+                    </div>
                     <button class="panel-close" onclick="toggleChat()">
                         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />

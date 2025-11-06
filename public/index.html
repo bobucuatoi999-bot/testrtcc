@@ -539,8 +539,9 @@
                 showStatus('Please enter your name', 'error');
                 return;
             }
-            // Generate random room ID
-            const roomId = 'room-' + Math.random().toString(36).substring(2, 9);
+            // Generate random room ID starting with "9w"
+            const randomPart = Math.random().toString(36).substring(2, 9);
+            const roomId = '9w' + randomPart;
             // Navigate to meeting page with params
             window.location.href = `meeting.html?room=${roomId}&name=${encodeURIComponent(name)}&video=true`;
         }

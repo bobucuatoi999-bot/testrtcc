@@ -275,8 +275,46 @@ function updateParticipantsList() {
 }
 
 /**
- * Toggle chat panel
+ * Display meeting ID in the room
  */
+function displayMeetingId(roomId) {
+    const meetingIdValue = document.getElementById('meetingIdValue');
+    if (meetingIdValue && roomId) {
+        meetingIdValue.textContent = roomId;
+    }
+}
+
+/**
+ * Copy meeting ID to clipboard
+ */
+function copyMeetingId() {
+    const meetingIdValue = document.getElementById('meetingIdValue');
+    if (!meetingIdValue || !meetingIdValue.textContent || meetingIdValue.textContent === '-') {
+        showStatus('No meeting ID available', 'error');
+        return;
+    }
+    
+    const meetingId = meetingIdValue.textContent;
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(meetingId).then(() => {
+        showStatus('Meeting ID copied to clipboard!', 'success');
+    }).catch(err => {
+        console.error('Failed to copy:', err);
+        // Fallback: select text
+        const range = document.createRange();
+        range.selectNode(meetingIdValue);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        try {
+            document.execCommand('copy');
+            showStatus('Meeting ID copied!', 'success');
+        } catch (e) {
+            showStatus('Failed to copy meeting ID', 'error');
+        }
+    });
+}
+
 function toggleChat() {
     const chatPanel = document.getElementById('chatPanel');
     const participantsPanel = document.getElementById('participantsPanel');
@@ -315,6 +353,23 @@ function toggleParticipants() {
  * @param {Object} messageData - Message object with { id, userName, message, timestamp, socketId }
  * @param {boolean} isOwnMessage - Whether this is the current user's message
  */
+/**
+ * Get initials from a name for avatar
+ */
+function getInitials(name) {
+    if (!name) return 'U';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+        return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 2).toUpperCase();
+}
+
+/**
+ * Display chat message with avatar
+ * @param {Object} messageData - Message object with { id, userName, message, timestamp, socketId }
+ * @param {boolean} isOwnMessage - Whether this is the current user's message
+ */
 function displayChatMessage(messageData, isOwnMessage = false) {
     const chatMessages = document.getElementById('chatMessages');
     if (!chatMessages || !messageData) return;
@@ -325,19 +380,56 @@ function displayChatMessage(messageData, isOwnMessage = false) {
 
     const time = new Date(messageData.timestamp);
     const timeString = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const senderName = isOwnMessage ? 'You' : (messageData.userName || 'User');
+    const initials = getInitials(messageData.userName || 'User');
 
-    messageDiv.innerHTML = `
-        <div class="chat-message-header">
-            <span class="chat-message-sender">${isOwnMessage ? 'You' : (messageData.userName || 'User')}</span>
-            <span class="chat-message-time">${timeString}</span>
-        </div>
-        <div class="chat-message-text">${messageData.message}</div>
-    `;
+    if (isOwnMessage) {
+        // Own message: right-aligned with avatar on right
+        messageDiv.innerHTML = `
+            <div class="chat-message-header">
+                <span class="chat-message-time">${timeString}</span>
+                <span class="chat-message-sender">You</span>
+            </div>
+            <div class="chat-message-content">
+                <div class="chat-message-bubble chat-message-bubble-own">${messageData.message}</div>
+                <div class="chat-message-avatar chat-message-avatar-own">${initials}</div>
+            </div>
+        `;
+    } else {
+        // Other user's message: left-aligned with avatar on left
+        messageDiv.innerHTML = `
+            <div class="chat-message-content">
+                <div class="chat-message-avatar">${initials}</div>
+                <div class="chat-message-bubble-wrapper">
+                    <div class="chat-message-header">
+                        <span class="chat-message-sender">${senderName}</span>
+                        <span class="chat-message-time">${timeString}</span>
+                    </div>
+                    <div class="chat-message-bubble">${messageData.message}</div>
+                </div>
+            </div>
+        `;
+    }
 
     chatMessages.appendChild(messageDiv);
     
+    // Update message count
+    updateChatMessageCount();
+    
     // Auto-scroll to bottom
     chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+/**
+ * Update chat message count in header
+ */
+function updateChatMessageCount() {
+    const chatMessages = document.getElementById('chatMessages');
+    const messageCountEl = document.getElementById('chatMessageCount');
+    if (!chatMessages || !messageCountEl) return;
+    
+    const count = chatMessages.children.length;
+    messageCountEl.textContent = `${count} message${count !== 1 ? 's' : ''}`;
 }
 
 /**
@@ -450,6 +542,7 @@ function cleanup() {
     const chatMessages = document.getElementById('chatMessages');
     if (chatMessages) {
         chatMessages.innerHTML = '';
+        updateChatMessageCount();
     }
 
     // Leave room on server
@@ -501,6 +594,10 @@ function initializeSocket() {
         socket.on('room-joined', (data) => {
             console.log('✅ Joined room:', data.roomId, `(${data.userCount}/${data.maxUsers} users)`);
             currentRoomId = data.roomId;
+            
+            // Display meeting ID
+            displayMeetingId(data.roomId);
+            
             if (data.userCount >= data.maxUsers) {
                 showStatus(`Room is full (${data.userCount}/${data.maxUsers})`, 'info');
             }
@@ -652,6 +749,9 @@ function initializeSocket() {
                 displayChatMessage(messageData, isOwnMessage);
             });
 
+            // Update message count
+            updateChatMessageCount();
+
             console.log(`💬 Loaded ${data.messages.length} chat message(s) from history`);
         });
 
@@ -671,7 +771,7 @@ function initializeSocket() {
                     }, 3000);
                 }
             } else {
-                showStatus(error.message || 'Server error occurred', 'error');
+            showStatus(error.message || 'Server error occurred', 'error');
             }
         });
 
@@ -936,7 +1036,7 @@ async function startCall(withVideo) {
     try {
         // Get user name and room ID from inputs or URL parameters
         if (nameInput) {
-            userName = nameInput.value.trim();
+        userName = nameInput.value.trim();
         } else {
             // Try to get from URL params (for meeting.html)
             const urlParams = new URLSearchParams(window.location.search);
@@ -1484,6 +1584,13 @@ window.addEventListener('DOMContentLoaded', () => {
     statusDiv = document.getElementById('status');
     chatBtn = document.getElementById('chatBtn');
     participantsBtn = document.getElementById('participantsBtn');
+    
+    // Display meeting ID from URL params if available (fallback)
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomIdFromUrl = urlParams.get('room');
+    if (roomIdFromUrl) {
+        displayMeetingId(roomIdFromUrl);
+    }
     
     // Clear any existing video elements (they will be created dynamically)
     const existingVideos = videoContainer.querySelectorAll('.video-wrapper');
