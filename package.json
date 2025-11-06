@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node server-mediasoup.js",
     "dev": "nodemon server-mediasoup.js",
+    "build:mediasoup": "node build-mediasoup-bundle.js",
+    "prestart": "npm run build:mediasoup",
     "cap:init": "npx cap init",
     "cap:add:android": "npx cap add android",
     "cap:sync": "npx cap sync",
@@ -24,12 +26,14 @@
   "dependencies": {
     "express": "^4.18.2",
     "mediasoup": "^3.19.7",
+    "mediasoup-client": "^3.7.9",
     "socket.io": "^4.6.1"
   },
   "devDependencies": {
     "@capacitor/android": "^5.5.0",
     "@capacitor/cli": "^5.5.0",
     "@capacitor/core": "^5.5.0",
+    "browserify": "^17.0.1",
     "nodemon": "^3.0.1"
   }
 }

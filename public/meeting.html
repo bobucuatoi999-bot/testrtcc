@@ -177,8 +177,9 @@
                 </div>
                 <div class="modal-body">
                     <p class="modal-description">This room is protected by a password. Please enter the password to join.</p>
-                    <div class="modal-input-group">
-                        <input type="password" id="passwordInput" placeholder="Enter password..." class="modal-input" onkeypress="if(event.key === 'Enter') submitPassword()">
+                    <form onsubmit="event.preventDefault(); submitPassword(); return false;">
+                        <div class="modal-input-group">
+                            <input type="password" id="passwordInput" placeholder="Enter password..." class="modal-input" onkeypress="if(event.key === 'Enter') { event.preventDefault(); submitPassword(); }">
                         <button type="button" class="password-toggle" onclick="togglePasswordVisibility()">
                             <svg id="passwordShowIcon" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -188,8 +189,9 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
                             </svg>
                         </button>
-                    </div>
-                    <div id="passwordError" class="modal-error" style="display: none;"></div>
+                        </div>
+                        <div id="passwordError" class="modal-error" style="display: none;"></div>
+                    </form>
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-secondary" onclick="closePasswordModal()">Cancel</button>
@@ -211,8 +213,9 @@
                 </div>
                 <div class="modal-body">
                     <p class="modal-description" id="adminPasswordModalDescription">Set a password to protect this room. Users will need to enter this password to join.</p>
-                    <div class="modal-input-group">
-                        <input type="password" id="adminPasswordInput" placeholder="Enter password..." class="modal-input" onkeypress="if(event.key === 'Enter') submitAdminPassword()">
+                    <form onsubmit="event.preventDefault(); if(document.getElementById('adminPasswordSubmitBtn').onclick) document.getElementById('adminPasswordSubmitBtn').onclick(); return false;">
+                        <div class="modal-input-group">
+                            <input type="password" id="adminPasswordInput" placeholder="Enter password..." class="modal-input" onkeypress="if(event.key === 'Enter') { event.preventDefault(); if(document.getElementById('adminPasswordSubmitBtn').onclick) document.getElementById('adminPasswordSubmitBtn').onclick(); }">
                         <button type="button" class="password-toggle" onclick="toggleAdminPasswordVisibility()">
                             <svg id="adminPasswordShowIcon" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -234,18 +237,19 @@
     </div>
 
     <!-- Load libraries -->
-    <!-- Load mediasoup-client from CDN - must load before client-mediasoup.js -->
+    <!-- Load mediasoup-client - try server bundle first (most reliable), then CDN fallbacks -->
     <script>
-        // Function to load mediasoup-client with fallback
+        // Function to load mediasoup-client with multiple fallbacks
+        // Priority: 1) Server bundle, 2) esm.sh CDN, 3) skypack CDN
         function loadMediasoupClient(callback) {
-            // Try primary CDN
+            // Priority 1: Try server-bundled version (most reliable, no external dependency)
+            console.log('📦 Loading mediasoup-client from server bundle...');
             const script = document.createElement('script');
-            script.src = 'https://unpkg.com/mediasoup-client@3.7.9/dist/mediasoup-client.min.js';
-            script.async = false; // Load synchronously to ensure it's available
+            script.src = '/mediasoup-client-bundle.js';
+            script.async = false;
             
             script.onload = function() {
-                console.log('📦 Mediasoup script loaded, checking for global...');
-                // Wait a bit for the global to be set
+                console.log('📦 Mediasoup bundle script loaded, checking for global...');
                 setTimeout(() => {
                     // Check for mediasoup in multiple possible locations
                     const mediasoupLib = window.mediasoup || window.mediasoupClient || (typeof mediasoup !== 'undefined' ? mediasoup : null);
@@ -255,59 +259,94 @@
                         if (!window.mediasoup) {
                             window.mediasoup = mediasoupLib;
                         }
-                        console.log('✅ Mediasoup client library loaded successfully');
-                        console.log('📋 Mediasoup available:', typeof window.mediasoup !== 'undefined');
+                        console.log('✅ Mediasoup client loaded from server bundle');
+                        console.log('📋 Mediasoup Device available:', typeof window.mediasoup.Device !== 'undefined');
                         callback();
                     } else {
-                        console.error('❌ Mediasoup script loaded but Device class not found');
+                        console.error('❌ Mediasoup bundle loaded but Device class not found');
                         console.log('Available globals:', Object.keys(window).filter(k => k.toLowerCase().includes('media')));
-                        // Try alternative CDN
-                        loadMediasoupClientFallback(callback);
+                        // Try CDN fallback
+                        loadMediasoupClientCDN(callback);
                     }
                 }, 200);
             };
             
             script.onerror = function() {
-                console.error('❌ Failed to load mediasoup-client from primary CDN');
-                loadMediasoupClientFallback(callback);
+                console.error('❌ Server bundle not found, trying CDN fallback...');
+                loadMediasoupClientCDN(callback);
             };
             
             document.head.appendChild(script);
         }
         
-        // Fallback: Try jsDelivr CDN
-        function loadMediasoupClientFallback(callback) {
-            console.log('🔄 Trying fallback CDN (jsDelivr)...');
+        // Fallback: Try esm.sh CDN (converts Node modules to browser-compatible)
+        function loadMediasoupClientCDN(callback) {
+            console.log('🔄 Trying esm.sh CDN...');
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/mediasoup-client@3.7.9/dist/mediasoup-client.min.js';
-            script.async = false;
-            
-            script.onload = function() {
-                setTimeout(() => {
-                    // Check for mediasoup in multiple possible locations
-                    const mediasoupLib = window.mediasoup || window.mediasoupClient || (typeof mediasoup !== 'undefined' ? mediasoup : null);
-                    
-                    if (mediasoupLib && typeof mediasoupLib.Device !== 'undefined') {
-                        // Make sure it's available globally
-                        if (!window.mediasoup) {
-                            window.mediasoup = mediasoupLib;
-                        }
-                        console.log('✅ Mediasoup client loaded from fallback CDN');
-                        callback();
-                    } else {
-                        console.error('❌ Mediasoup failed to load from all CDNs');
-                        console.log('Available globals:', Object.keys(window).filter(k => k.toLowerCase().includes('media')));
-                        alert('Failed to load mediasoup-client library. Please check your internet connection and refresh the page.');
-                    }
-                }, 200);
+            script.type = 'module';
+            script.textContent = `
+                import * as mediasoupClient from 'https://esm.sh/mediasoup-client@3.7.9';
+                window.mediasoup = mediasoupClient;
+                console.log('✅ Mediasoup client loaded from esm.sh');
+                window.mediasoupLoaded = true;
+            `;
+            script.onerror = function() {
+                console.error('❌ esm.sh failed, trying skypack...');
+                loadMediasoupClientSkypack(callback);
             };
+            document.head.appendChild(script);
             
+            // Wait for the module to load
+            const checkLoaded = setInterval(() => {
+                if (window.mediasoupLoaded && window.mediasoup) {
+                    clearInterval(checkLoaded);
+                    callback();
+                }
+            }, 100);
+            
+            // Timeout after 10 seconds
+            setTimeout(() => {
+                if (!window.mediasoupLoaded) {
+                    clearInterval(checkLoaded);
+                    console.error('❌ esm.sh timeout, trying skypack...');
+                    loadMediasoupClientSkypack(callback);
+                }
+            }, 10000);
+        }
+        
+        // Last resort: Try skypack CDN
+        function loadMediasoupClientSkypack(callback) {
+            console.log('🔄 Trying skypack CDN (last resort)...');
+            const script = document.createElement('script');
+            script.type = 'module';
+            script.textContent = `
+                import * as mediasoupClient from 'https://cdn.skypack.dev/mediasoup-client@3.7.9';
+                window.mediasoup = mediasoupClient;
+                console.log('✅ Mediasoup client loaded from skypack');
+                window.mediasoupLoaded = true;
+            `;
             script.onerror = function() {
                 console.error('❌ All CDN attempts failed');
                 alert('Failed to load mediasoup-client library. Please check your internet connection and refresh the page.');
             };
-            
             document.head.appendChild(script);
+            
+            // Wait for the module to load
+            const checkLoaded = setInterval(() => {
+                if (window.mediasoupLoaded && window.mediasoup) {
+                    clearInterval(checkLoaded);
+                    callback();
+                }
+            }, 100);
+            
+            // Timeout after 10 seconds
+            setTimeout(() => {
+                if (!window.mediasoupLoaded) {
+                    clearInterval(checkLoaded);
+                    console.error('❌ All CDN attempts failed');
+                    alert('Failed to load mediasoup-client library. Please check your internet connection and refresh the page.');
+                }
+            }, 10000);
         }
         
         // Load mediasoup-client first, then other scripts
@@ -324,7 +363,9 @@
             // Finally load our client script
             const clientScript = document.createElement('script');
             clientScript.src = 'client-mediasoup.js';
-            clientScript.onload = () => console.log('✅ client-mediasoup.js loaded');
+            clientScript.onload = () => {
+                console.log('✅ client-mediasoup.js loaded');
+            };
             clientScript.onerror = () => console.error('❌ Failed to load client-mediasoup.js');
             document.head.appendChild(clientScript);
         });
