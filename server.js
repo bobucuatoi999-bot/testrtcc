@@ -34,7 +34,9 @@ const rooms = new Map();
 // Format: { socketId: userName }
 const userNames = new Map();
 
-// Note: PeerJS IDs no longer needed - Jitsi handles WebRTC internally
+// Store PeerJS IDs mapped to socket IDs
+// Format: { socketId: peerId }
+const peerIds = new Map();
 
 // Store chat messages per room
 // Format: { roomId: [{ id, userName, message, timestamp, socketId }] }
@@ -193,6 +195,7 @@ io.on('connection', (socket) => {
         const usersWithNames = roomUsers.map(id => ({
           socketId: id,
           userName: userNames.get(id) || 'User',
+          peerId: peerIds.get(id) || null,
           isAdmin: id === adminSocketId
         }));
         socket.emit('room-users', { users: usersWithNames });
@@ -208,6 +211,14 @@ io.on('connection', (socket) => {
         isAdmin: isAdmin
       });
 
+      // Send my PeerJS ID if I have one (send to all existing users)
+      if (peerIds.has(socket.id)) {
+        socket.to(roomId).emit('peer-id', {
+          peerId: peerIds.get(socket.id),
+          socketId: socket.id
+        });
+      }
+      
       // Broadcast updated user count to all users in room
       io.to(roomId).emit('room-updated', {
         roomId: roomId,
@@ -234,9 +245,9 @@ io.on('connection', (socket) => {
   });
 
   // ============================================
-  // Handle Get Room Users (for syncing participant count)
+  // Handle Screen Sharing State
   // ============================================
-  socket.on('get-room-users', (data) => {
+  socket.on('screen-sharing-started', (data) => {
     try {
       const { roomId } = data || {};
       
@@ -251,25 +262,50 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Get all users in the room
-      const roomUsers = Array.from(rooms.get(roomId));
-      const adminSocketId = roomAdmins.get(roomId);
+      const userName = userNames.get(socket.id) || 'User';
       
-      const usersWithNames = roomUsers.map(id => ({
-        socketId: id,
-        userName: userNames.get(id) || 'User',
-        isAdmin: id === adminSocketId
-      }));
-      
-      socket.emit('room-users', { 
-        roomId: roomId,
-        users: usersWithNames,
-        userCount: roomUsers.length
+      // Broadcast to all users in the room (except sender)
+      socket.to(roomId).emit('user-screen-sharing-started', {
+        socketId: socket.id,
+        userName: userName,
+        roomId: roomId
       });
       
+      console.log(`📺 User ${socket.id} (${userName}) started screen sharing in room ${roomId}`);
     } catch (error) {
-      console.error(`❌ Error getting room users: ${error.message}`);
-      socket.emit('error', { message: 'Failed to get room users', error: error.message });
+      console.error(`❌ Error handling screen sharing started: ${error.message}`);
+      socket.emit('error', { message: 'Failed to broadcast screen sharing', error: error.message });
+    }
+  });
+
+  socket.on('screen-sharing-stopped', (data) => {
+    try {
+      const { roomId } = data || {};
+      
+      if (!roomId || typeof roomId !== 'string') {
+        socket.emit('error', { message: 'Invalid room ID' });
+        return;
+      }
+
+      // Validate user is in the room
+      if (!rooms.has(roomId) || !rooms.get(roomId).has(socket.id)) {
+        socket.emit('error', { message: 'You are not in this room' });
+        return;
+      }
+
+      const userName = userNames.get(socket.id) || 'User';
+      
+      // Broadcast to all users in the room (except sender)
+      socket.to(roomId).emit('user-screen-sharing-stopped', {
+        socketId: socket.id,
+        userName: userName,
+        roomId: roomId
+      });
+      
+      console.log(`📺 User ${socket.id} (${userName}) stopped screen sharing in room ${roomId}`);
+    } catch (error) {
+      console.error(`❌ Error handling screen sharing stopped: ${error.message}`);
+      socket.emit('error', { message: 'Failed to broadcast screen sharing stop', error: error.message });
     }
   });
 
@@ -389,8 +425,77 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Note: WebRTC signaling (peer-id, peerjs-signal, end-call) removed
-  // Jitsi Meet handles all WebRTC connections internally
+  // ============================================
+  // Handle PeerJS ID Exchange
+  // ============================================
+  socket.on('peer-id', (data) => {
+    try {
+      const { roomId, peerId } = data || {};
+
+      if (roomId && peerId) {
+        // Store PeerJS ID
+        peerIds.set(socket.id, peerId);
+        console.log(`🔑 User ${socket.id} PeerJS ID: ${peerId}`);
+
+        // Send to other users in the room
+        socket.to(roomId).emit('peer-id', {
+          peerId: peerId,
+          socketId: socket.id
+        });
+      }
+    } catch (error) {
+      console.error(`❌ Error handling peer-id: ${error.message}`);
+    }
+  });
+
+  // ============================================
+  // Handle PeerJS Signaling (for WebRTC connection)
+  // ============================================
+  socket.on('peerjs-signal', (data) => {
+    try {
+      const { signal, targetUserId, roomId } = data;
+
+      if (!signal || !targetUserId || !roomId) {
+        socket.emit('error', { message: 'Missing required signal data' });
+        return;
+      }
+
+      console.log(`🔗 PeerJS signal from ${socket.id} to ${targetUserId} in room ${roomId}`);
+
+      // Relay signal to the target user
+      socket.to(targetUserId).emit('peerjs-signal', {
+        signal: signal,
+        senderId: socket.id,
+        roomId: roomId
+      });
+
+    } catch (error) {
+      console.error(`❌ Error handling PeerJS signal: ${error.message}`);
+      socket.emit('error', { message: 'Failed to send signal', error: error.message });
+    }
+  });
+
+  // ============================================
+  // Handle Call End
+  // ============================================
+  socket.on('end-call', (data) => {
+    try {
+      const { roomId } = data || {};
+
+      if (roomId) {
+        // Notify all users in the room
+        socket.to(roomId).emit('call-ended', { 
+          userId: socket.id,
+          roomId: roomId 
+        });
+        console.log(`📴 User ${socket.id} ended call in room ${roomId}`);
+      }
+
+    } catch (error) {
+      console.error(`❌ Error handling end-call: ${error.message}`);
+      socket.emit('error', { message: 'Failed to end call', error: error.message });
+    }
+  });
 
   // ============================================
   // Handle User Leaving Room (without ending call)
@@ -455,8 +560,9 @@ io.on('connection', (socket) => {
   socket.on('disconnect', (reason) => {
     console.log(`👋 User disconnected: ${socket.id} (reason: ${reason})`);
 
-    // Remove user name
+    // Remove user name and PeerJS ID
     userNames.delete(socket.id);
+    peerIds.delete(socket.id);
     
     // Clean up rate limiting data
     userMessageCounts.delete(socket.id);

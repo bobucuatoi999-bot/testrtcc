@@ -48,7 +48,6 @@ const SERVER_URL = window.SERVER_URL || 'http://localhost:3000';
 
 // WebRTC Configuration with FREE STUN and TURN servers
 // Multiple STUN servers + Multiple TURN servers for reliability
-// Optimized for cross-network (WiFi + 4G/5G) connectivity
 const rtcConfig = {
     iceServers: [
         // Free Google STUN servers (multiple for redundancy)
@@ -61,44 +60,29 @@ const rtcConfig = {
         { urls: 'stun:stun.stunprotocol.org:3478' },
         { urls: 'stun:stun.voiparound.com' },
         { urls: 'stun:stun.voipbuster.com' },
-        // Free TURN servers with multiple transports (UDP + TCP)
-        // OpenRelay (no auth required, reliable)
+        // Free TURN servers (multiple for redundancy)
         { 
             urls: [
                 'turn:openrelay.metered.ca:80',
                 'turn:openrelay.metered.ca:443',
-                'turn:openrelay.metered.ca:443?transport=tcp',
-                'turns:openrelay.metered.ca:443?transport=tcp'
+                'turn:openrelay.metered.ca:443?transport=tcp'
             ],
             username: 'openrelayproject',
             credential: 'openrelayproject'
         },
-        // Metered.ca relay (backup)
+        // Additional free TURN server
         {
             urls: [
                 'turn:relay.metered.ca:80',
                 'turn:relay.metered.ca:443',
-                'turn:relay.metered.ca:443?transport=tcp',
-                'turns:relay.metered.ca:443?transport=tcp'
-            ],
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        },
-        // Additional TURN servers for redundancy
-        {
-            urls: [
-                'turn:openrelay.metered.ca:80?transport=udp',
-                'turn:openrelay.metered.ca:443?transport=tcp'
+                'turn:relay.metered.ca:443?transport=tcp'
             ],
             username: 'openrelayproject',
             credential: 'openrelayproject'
         }
     ],
     iceCandidatePoolSize: 10,
-    iceTransportPolicy: 'all', // Use both relay and direct connections
-    // Enable bundle and rtcp-mux for better performance
-    bundlePolicy: 'max-bundle',
-    rtcpMuxPolicy: 'require'
+    iceTransportPolicy: 'all' // Use both relay and direct connections
 };
 
 // ============================================
@@ -1486,33 +1470,6 @@ function initializePeer() {
             call.on('stream', (stream) => {
             console.log('✅ Received remote stream from PeerJS ID:', call.peer);
             
-            // Listen for track changes (critical for screen sharing updates)
-            stream.getTracks().forEach(track => {
-                // Track when track is replaced (screen share changes)
-                const originalEnabled = track.enabled;
-                
-                track.onended = () => {
-                    console.log('📴 Track ended for PeerJS ID:', call.peer);
-                };
-                
-                // Monitor track state changes
-                track.onmute = () => {
-                    console.log('🔇 Track muted for PeerJS ID:', call.peer);
-                };
-                
-                track.onunmute = () => {
-                    console.log('🔊 Track unmuted for PeerJS ID:', call.peer);
-                    // Stream updated - refresh video element
-                    if (targetSocketId && remotePeers.has(targetSocketId)) {
-                        const peerData = remotePeers.get(targetSocketId);
-                        if (peerData.videoElement && peerData.videoElement.srcObject !== stream) {
-                            peerData.videoElement.srcObject = stream;
-                            console.log('🔄 Stream updated for socket:', targetSocketId);
-                        }
-                    }
-                };
-            });
-            
             // Find or create peer entry
             if (targetSocketId && remotePeers.has(targetSocketId)) {
                 const peerData = remotePeers.get(targetSocketId);
@@ -1530,7 +1487,6 @@ function initializePeer() {
                     peerData.videoWrapper = videoElements.videoWrapper;
                     peerData.videoLabel = videoElements.videoLabel;
                     peerData.placeholder = videoElements.placeholder;
-                    peerData.loadingSpinner = videoElements.loadingSpinner;
                     peerData.videoElement.srcObject = stream;
                     peerData.videoElement.style.display = 'block';
                     updateVideoGrid();
@@ -1538,9 +1494,6 @@ function initializePeer() {
                 // Hide placeholder
                 if (peerData.placeholder) {
                     peerData.placeholder.style.display = 'none';
-                }
-                if (peerData.loadingSpinner) {
-                    peerData.loadingSpinner.style.display = 'none';
                 }
                 // Update label with user name if available
                 updateVideoLabel(peerData);
@@ -1563,7 +1516,6 @@ function initializePeer() {
                             peerData.videoWrapper = videoElements.videoWrapper;
                             peerData.videoLabel = videoElements.videoLabel;
                             peerData.placeholder = videoElements.placeholder;
-                            peerData.loadingSpinner = videoElements.loadingSpinner;
                             peerData.videoElement.srcObject = stream;
                             peerData.videoElement.style.display = 'block';
                             updateVideoGrid();
@@ -1571,9 +1523,6 @@ function initializePeer() {
                         // Hide placeholder
                         if (peerData.placeholder) {
                             peerData.placeholder.style.display = 'none';
-                        }
-                        if (peerData.loadingSpinner) {
-                            peerData.loadingSpinner.style.display = 'none';
                         }
                         // Update label with user name if available
                         updateVideoLabel(peerData);
@@ -2295,22 +2244,6 @@ async function connectToUser(peerId, socketId) {
                 peerData.streamTimeout = null;
             }
             
-            // Listen for track changes (important for screen sharing)
-            stream.getTracks().forEach(track => {
-                track.onended = () => {
-                    console.log('📴 Track ended for socket:', socketId);
-                };
-                
-                // Handle track mute/unmute
-                track.onmute = () => {
-                    console.log('🔇 Track muted for socket:', socketId);
-                };
-                
-                track.onunmute = () => {
-                    console.log('🔊 Track unmuted for socket:', socketId);
-                };
-            });
-            
             if (socketId && remotePeers.has(socketId)) {
                 const peerData = remotePeers.get(socketId);
                 peerData.stream = stream;
@@ -2463,82 +2396,6 @@ function toggleMute() {
 }
 
 /**
- * Replace video track in all peer connections (for screen sharing)
- * @param {MediaStreamTrack} newTrack - The new video track to use
- * @param {boolean} isScreenShare - Whether this is screen sharing (true) or restoring camera (false)
- * @returns {Promise<{success: number, failed: number}>} Replacement results
- */
-async function replaceVideoTrackInAllPeers(newTrack, isScreenShare = true) {
-    let successCount = 0;
-    let failCount = 0;
-    const replacePromises = [];
-    
-    remotePeers.forEach((peerData, socketId) => {
-        if (peerData.call) {
-            // Access peerConnection (PeerJS exposes this)
-            const peerConnection = peerData.call.peerConnection;
-            
-            if (peerConnection && peerConnection.getSenders) {
-                try {
-                    const senders = peerConnection.getSenders();
-                    const videoSender = senders.find(s => 
-                        s.track && s.track.kind === 'video'
-                    );
-                    
-                    if (videoSender) {
-                        const replacePromise = videoSender.replaceTrack(newTrack)
-                            .then(() => {
-                                successCount++;
-                                console.log(`✅ ${isScreenShare ? 'Screen share' : 'Video'} track replaced for socket:`, socketId);
-                            })
-                            .catch(err => {
-                                failCount++;
-                                console.warn('⚠️ Error replacing track for', socketId, err);
-                                
-                                // Retry once after delay
-                                setTimeout(() => {
-                                    if (peerData.call && peerData.call.peerConnection) {
-                                        const retrySenders = peerData.call.peerConnection.getSenders();
-                                        const retrySender = retrySenders.find(s => 
-                                            s.track && s.track.kind === 'video'
-                                        );
-                                        if (retrySender && newTrack) {
-                                            retrySender.replaceTrack(newTrack)
-                                                .then(() => {
-                                                    successCount++;
-                                                    failCount--;
-                                                    console.log('✅ Track replaced on retry for socket:', socketId);
-                                                })
-                                                .catch(retryErr => {
-                                                    console.error('❌ Track replacement failed on retry for', socketId, retryErr);
-                                                });
-                                        }
-                                    }
-                                }, 1000);
-                            });
-                        replacePromises.push(replacePromise);
-                    } else {
-                        console.warn('⚠️ No video sender found for socket:', socketId);
-                        failCount++;
-                    }
-                } catch (err) {
-                    console.error('❌ Error accessing peerConnection for socket:', socketId, err);
-                    failCount++;
-                }
-            } else {
-                console.warn('⚠️ peerConnection not available for socket:', socketId);
-                failCount++;
-            }
-        }
-    });
-    
-    // Wait for all replacements to complete
-    await Promise.allSettled(replacePromises);
-    
-    return { success: successCount, failed: failCount };
-}
-
-/**
  * Toggle camera on/off
  */
 function toggleCamera() {
@@ -2594,14 +2451,22 @@ async function toggleScreenShare() {
                 screenStream = null;
             }
 
-            // Restore local video stream in all calls with proper error handling
+            // Restore local video stream in all calls
             if (localStream) {
                 const videoTrack = localStream.getVideoTracks()[0];
                 if (videoTrack) {
-                    const result = await replaceVideoTrackInAllPeers(videoTrack, false);
-                    if (result.failed > 0) {
-                        console.warn(`⚠️ Failed to restore video for ${result.failed} peer(s)`);
+                    remotePeers.forEach((peerData, socketId) => {
+                        if (peerData.call && peerData.call.peerConnection) {
+                            const sender = peerData.call.peerConnection.getSenders().find(s => {
+                        return s.track && s.track.kind === 'video';
+                    });
+                    if (sender && videoTrack) {
+                                sender.replaceTrack(videoTrack).catch(err => {
+                                    console.warn('Error replacing track for', socketId, err);
+                                });
                     }
+                        }
+                    });
                 }
             }
 
@@ -2630,20 +2495,22 @@ async function toggleScreenShare() {
             try {
                 screenStream = await getScreenShare();
                 
-                // Replace video track in all active calls with proper error handling
+                // Replace video track in all active calls
                 if (screenStream) {
                     const videoTrack = screenStream.getVideoTracks()[0];
                     if (videoTrack) {
-                        const result = await replaceVideoTrackInAllPeers(videoTrack, true);
-                        
-                        if (result.failed > 0) {
-                            console.warn(`⚠️ Track replacement: ${result.success} succeeded, ${result.failed} failed`);
-                            if (result.failed === remotePeers.size) {
-                                showStatus('Screen sharing started but may not be visible to all users. Check your connection.', 'info');
-                            } else if (result.failed > 0) {
-                                showStatus(`Screen sharing started. Visible to ${result.success} of ${remotePeers.size} users.`, 'info');
-                            }
+                        remotePeers.forEach((peerData, socketId) => {
+                            if (peerData.call && peerData.call.peerConnection) {
+                                const sender = peerData.call.peerConnection.getSenders().find(s => {
+                            return s.track && s.track.kind === 'video';
+                        });
+                        if (sender && videoTrack) {
+                                    sender.replaceTrack(videoTrack).catch(err => {
+                                        console.warn('Error replacing track for', socketId, err);
+                                    });
                         }
+                            }
+                        });
                     }
 
                     // Show screen share in local video (on their own tile)

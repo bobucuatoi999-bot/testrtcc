@@ -1,0 +1,22 @@
+{
+  "appId": "com.webrtc.call.app",
+  "appName": "WebRTC Call",
+  "webDir": "public",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "backgroundColor": "#4CAF50"
+    }
+  }
+}
+

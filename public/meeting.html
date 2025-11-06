@@ -234,15 +234,15 @@
     </div>
 
     <!-- Load libraries -->
-    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <script src="https://unpkg.com/mediasoup-client@3.7.9/dist/mediasoup-client.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="config.js"></script>
-    <script src="client.js"></script>
+    <script src="client-mediasoup.js"></script>
     
     <script>
         // Initialize meeting from URL parameters
         window.addEventListener('DOMContentLoaded', () => {
-            // Wait for client.js to load
+            // Wait for client-mediasoup.js to load
             setTimeout(() => {
                 const urlParams = new URLSearchParams(window.location.search);
                 const roomId = urlParams.get('room');

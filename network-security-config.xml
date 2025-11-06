@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 
+    Network Security Config
+    This file should be placed at: android/app/src/main/res/xml/network_security_config.xml
+    Create the xml folder if it doesn't exist
+-->
+
+<network-security-config>
+    <!-- Allow cleartext traffic for development (HTTP) -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+    
+    <!-- Specific domain configurations -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <!-- Add your development server domains here -->
+    </domain-config>
+    
+    <!-- For production with HTTPS, you can restrict cleartext -->
+    <!--
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">your-production-domain.com</domain>
+    </domain-config>
+    -->
+</network-security-config>
+
