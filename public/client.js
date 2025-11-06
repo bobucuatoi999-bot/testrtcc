@@ -21,8 +21,12 @@ let roomHasPassword = false;    // Whether room has password
 let pendingPassword = null;     // Password to use when joining (if needed)
 
 // Multi-user support: Map of remote peers
-// Format: { socketId: { peerId, userName, call, stream, videoElement, videoWrapper, videoLabel } }
+// Format: { socketId: { peerId, userName, call, stream, videoElement, videoWrapper, videoLabel, isSharingScreen } }
 let remotePeers = new Map();
+
+// Zoom view state
+let zoomedVideoElement = null;
+let zoomedVideoWrapper = null;
 
 // Maximum users per room
 const MAX_USERS = 7;
@@ -201,21 +205,85 @@ function updateVideoGrid() {
 }
 
 /**
- * Update video label with mute status
+ * Update local video label with user name and status
  */
-function updateVideoLabel(peerData) {
-    if (!peerData.videoLabel) return;
+function updateLocalVideoLabel() {
+    if (!localVideoLabel) return;
     
-    const isMuted = peerData.stream && peerData.stream.getAudioTracks().length > 0 && 
-                    !peerData.stream.getAudioTracks()[0].enabled;
+    const muted = isMuted || false;
+    const isSharing = isSharingScreen || false;
     
-    peerData.videoLabel.innerHTML = `
-        <span>${peerData.userName || 'User'}</span>
-        ${isMuted ? 
-            '<svg class="mic-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>' :
+    // Add screen sharing indicator
+    const screenShareIndicator = isSharing ? `
+        <span class="screen-share-indicator">
+            <span class="screen-share-dot"></span>
+            <span class="screen-share-text">now live</span>
+        </span>
+    ` : '';
+    
+    localVideoLabel.innerHTML = `
+        <span>${userName || 'You'}</span>
+        ${screenShareIndicator}
+        ${muted ? 
+            '<svg class="mic-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>' :
             '<svg class="mic-on" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>'
         }
     `;
+    
+    // Make local video wrapper clickable if sharing
+    if (localVideoWrapper) {
+        if (isSharing) {
+            localVideoWrapper.classList.add('sharing-screen');
+            localVideoWrapper.style.cursor = 'pointer';
+            localVideoWrapper.onclick = () => zoomToLocalVideo();
+        } else {
+            localVideoWrapper.classList.remove('sharing-screen');
+            localVideoWrapper.style.cursor = '';
+            localVideoWrapper.onclick = null;
+        }
+    }
+}
+
+/**
+ * Update video label with mute status and screen sharing
+ */
+function updateVideoLabel(peerData) {
+    if (!peerData || !peerData.videoLabel) return;
+    
+    const userName = peerData.userName || 'User';
+    const isMuted = peerData.stream && peerData.stream.getAudioTracks().length > 0 && 
+                   !peerData.stream.getAudioTracks()[0].enabled;
+    const isSharing = peerData.isSharingScreen || false;
+    
+    // Add screen sharing indicator
+    const screenShareIndicator = isSharing ? `
+        <span class="screen-share-indicator">
+            <span class="screen-share-dot"></span>
+            <span class="screen-share-text">now live</span>
+        </span>
+    ` : '';
+    
+    peerData.videoLabel.innerHTML = `
+        <span>${userName}</span>
+        ${screenShareIndicator}
+        ${isMuted ? 
+            '<svg class="mic-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>' :
+            '<svg class="mic-on" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>'
+        }
+    `;
+    
+    // Make video wrapper clickable if sharing
+    if (peerData.videoWrapper) {
+        if (isSharing) {
+            peerData.videoWrapper.classList.add('sharing-screen');
+            peerData.videoWrapper.style.cursor = 'pointer';
+            peerData.videoWrapper.onclick = () => zoomToVideo(peerData);
+        } else {
+            peerData.videoWrapper.classList.remove('sharing-screen');
+            peerData.videoWrapper.style.cursor = '';
+            peerData.videoWrapper.onclick = null;
+        }
+    }
 }
 
 /**
@@ -483,6 +551,162 @@ function initializeDraggableMeetingId() {
             localStorage.setItem('meetingIdPosition', JSON.stringify(position));
         }
     });
+}
+
+/**
+ * Zoom to a remote video (when user is sharing screen)
+ * @param {Object} peerData - Peer data object
+ */
+function zoomToVideo(peerData) {
+    if (!peerData || !peerData.videoElement || !peerData.isSharingScreen) return;
+    
+    // Close existing zoom if any
+    closeZoomView();
+    
+    // Create zoom overlay
+    const zoomOverlay = document.createElement('div');
+    zoomOverlay.className = 'zoom-overlay';
+    zoomOverlay.id = 'zoomOverlay';
+    
+    const zoomContent = document.createElement('div');
+    zoomContent.className = 'zoom-content';
+    
+    const zoomVideo = document.createElement('video');
+    zoomVideo.autoplay = true;
+    zoomVideo.playsInline = true;
+    zoomVideo.srcObject = peerData.videoElement.srcObject;
+    zoomVideo.className = 'zoom-video';
+    
+    const zoomLabel = document.createElement('div');
+    zoomLabel.className = 'zoom-label';
+    zoomLabel.innerHTML = `
+        <span>${peerData.userName || 'User'}</span>
+        <span class="screen-share-indicator">
+            <span class="screen-share-dot"></span>
+            <span class="screen-share-text">now live</span>
+        </span>
+    `;
+    
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'zoom-close-btn';
+    closeBtn.innerHTML = `
+        <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+    `;
+    closeBtn.onclick = closeZoomView;
+    
+    zoomContent.appendChild(zoomVideo);
+    zoomContent.appendChild(zoomLabel);
+    zoomContent.appendChild(closeBtn);
+    zoomOverlay.appendChild(zoomContent);
+    
+    document.body.appendChild(zoomOverlay);
+    
+    // Store references
+    zoomedVideoElement = zoomVideo;
+    zoomedVideoWrapper = zoomOverlay;
+    
+    // Close on overlay click (but not on content click)
+    zoomOverlay.onclick = (e) => {
+        if (e.target === zoomOverlay) {
+            closeZoomView();
+        }
+    };
+    
+    // Close on Escape key
+    const escapeHandler = (e) => {
+        if (e.key === 'Escape') {
+            closeZoomView();
+            document.removeEventListener('keydown', escapeHandler);
+        }
+    };
+    document.addEventListener('keydown', escapeHandler);
+}
+
+/**
+ * Zoom to local video (when sharing screen)
+ */
+function zoomToLocalVideo() {
+    if (!localVideo || !isSharingScreen) return;
+    
+    // Close existing zoom if any
+    closeZoomView();
+    
+    // Create zoom overlay
+    const zoomOverlay = document.createElement('div');
+    zoomOverlay.className = 'zoom-overlay';
+    zoomOverlay.id = 'zoomOverlay';
+    
+    const zoomContent = document.createElement('div');
+    zoomContent.className = 'zoom-content';
+    
+    const zoomVideo = document.createElement('video');
+    zoomVideo.autoplay = true;
+    zoomVideo.playsInline = true;
+    zoomVideo.srcObject = localVideo.srcObject;
+    zoomVideo.className = 'zoom-video';
+    zoomVideo.muted = true; // Always mute local video
+    
+    const zoomLabel = document.createElement('div');
+    zoomLabel.className = 'zoom-label';
+    zoomLabel.innerHTML = `
+        <span>${userName || 'You'}</span>
+        <span class="screen-share-indicator">
+            <span class="screen-share-dot"></span>
+            <span class="screen-share-text">now live</span>
+        </span>
+    `;
+    
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'zoom-close-btn';
+    closeBtn.innerHTML = `
+        <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+    `;
+    closeBtn.onclick = closeZoomView;
+    
+    zoomContent.appendChild(zoomVideo);
+    zoomContent.appendChild(zoomLabel);
+    zoomContent.appendChild(closeBtn);
+    zoomOverlay.appendChild(zoomContent);
+    
+    document.body.appendChild(zoomOverlay);
+    
+    // Store references
+    zoomedVideoElement = zoomVideo;
+    zoomedVideoWrapper = zoomOverlay;
+    
+    // Close on overlay click (but not on content click)
+    zoomOverlay.onclick = (e) => {
+        if (e.target === zoomOverlay) {
+            closeZoomView();
+        }
+    };
+    
+    // Close on Escape key
+    const escapeHandler = (e) => {
+        if (e.key === 'Escape') {
+            closeZoomView();
+            document.removeEventListener('keydown', escapeHandler);
+        }
+    };
+    document.addEventListener('keydown', escapeHandler);
+}
+
+/**
+ * Close zoom view
+ */
+function closeZoomView() {
+    if (zoomedVideoWrapper) {
+        zoomedVideoWrapper.remove();
+        zoomedVideoWrapper = null;
+    }
+    if (zoomedVideoElement) {
+        zoomedVideoElement.srcObject = null;
+        zoomedVideoElement = null;
+    }
 }
 
 /**
@@ -844,6 +1068,7 @@ function initializeSocket() {
                             peerId: userData.peerId,
                             userName: userData.userName || 'User',
                             isAdmin: userData.isAdmin || false,
+                            isSharingScreen: false,
                             call: null,
                             stream: null,
                             videoElement: videoElements.videoElement,
@@ -891,6 +1116,7 @@ function initializeSocket() {
                 remotePeers.set(data.userId, {
                     userName: remoteUserName,
                     isAdmin: data.isAdmin || false,
+                    isSharingScreen: false,
                     peerId: null, // Will be set when peer-id arrives
                     call: null,
                     stream: null,
@@ -917,6 +1143,7 @@ function initializeSocket() {
                         peerId: data.peerId,
                         userName: 'User', // Will be updated when we get user info
                         isAdmin: false, // Will be updated when we get user info
+                        isSharingScreen: false,
                         call: null,
                         stream: null,
                         videoElement: videoElements.videoElement,
@@ -1596,12 +1823,8 @@ async function startCall(withVideo) {
             
             localVideoLabel = document.createElement('div');
             localVideoLabel.className = 'video-label';
-            localVideoLabel.innerHTML = `
-                <span>${userName || 'You'}</span>
-                <svg class="mic-on" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                </svg>
-            `;
+            localVideoLabel.id = 'localVideoLabel';
+            updateLocalVideoLabel();
             localVideoWrapper.appendChild(localVideoLabel);
             
             localVideo = document.createElement('video');
@@ -1754,6 +1977,7 @@ async function connectToUser(peerId, socketId) {
                     peerId: peerId,
                     userName: 'User',
                     isAdmin: false,
+                    isSharingScreen: false,
                     call: call,
                     stream: null,
                     videoElement: videoElements.videoElement,
@@ -1991,9 +2215,22 @@ async function toggleScreenShare() {
             }
 
             isSharingScreen = false;
+            updateLocalVideoLabel();
+            
+            // Restore local video display
+            if (localVideo && localStream) {
+                localVideo.srcObject = localStream;
+            }
+            
+            // Broadcast screen sharing stopped
+            if (socket && currentRoomId) {
+                socket.emit('screen-sharing-stopped', { roomId: currentRoomId });
+            }
+            
             if (screenShareBtn) {
                 const label = screenShareBtn.querySelector('.control-label');
                 if (label) label.textContent = 'Share Screen';
+                screenShareBtn.classList.remove('active');
             }
             showStatus('Screen sharing stopped', 'info');
 
@@ -2020,9 +2257,9 @@ async function toggleScreenShare() {
                         });
                     }
 
-                    // Show screen share in local video
+                    // Show screen share in local video (on their own tile)
                     if (localVideo) {
-                    localVideo.srcObject = screenStream;
+                        localVideo.srcObject = screenStream;
                     }
 
                     // Handle screen share ending
@@ -2031,6 +2268,13 @@ async function toggleScreenShare() {
                     };
 
                     isSharingScreen = true;
+                    updateLocalVideoLabel();
+                    
+                    // Broadcast screen sharing started
+                    if (socket && currentRoomId) {
+                        socket.emit('screen-sharing-started', { roomId: currentRoomId });
+                    }
+                    
                     if (screenShareBtn) {
                         const label = screenShareBtn.querySelector('.control-label');
                         if (label) label.textContent = 'Stop Sharing';

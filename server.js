@@ -245,6 +245,71 @@ io.on('connection', (socket) => {
   });
 
   // ============================================
+  // Handle Screen Sharing State
+  // ============================================
+  socket.on('screen-sharing-started', (data) => {
+    try {
+      const { roomId } = data || {};
+      
+      if (!roomId || typeof roomId !== 'string') {
+        socket.emit('error', { message: 'Invalid room ID' });
+        return;
+      }
+
+      // Validate user is in the room
+      if (!rooms.has(roomId) || !rooms.get(roomId).has(socket.id)) {
+        socket.emit('error', { message: 'You are not in this room' });
+        return;
+      }
+
+      const userName = userNames.get(socket.id) || 'User';
+      
+      // Broadcast to all users in the room (except sender)
+      socket.to(roomId).emit('user-screen-sharing-started', {
+        socketId: socket.id,
+        userName: userName,
+        roomId: roomId
+      });
+      
+      console.log(`📺 User ${socket.id} (${userName}) started screen sharing in room ${roomId}`);
+    } catch (error) {
+      console.error(`❌ Error handling screen sharing started: ${error.message}`);
+      socket.emit('error', { message: 'Failed to broadcast screen sharing', error: error.message });
+    }
+  });
+
+  socket.on('screen-sharing-stopped', (data) => {
+    try {
+      const { roomId } = data || {};
+      
+      if (!roomId || typeof roomId !== 'string') {
+        socket.emit('error', { message: 'Invalid room ID' });
+        return;
+      }
+
+      // Validate user is in the room
+      if (!rooms.has(roomId) || !rooms.get(roomId).has(socket.id)) {
+        socket.emit('error', { message: 'You are not in this room' });
+        return;
+      }
+
+      const userName = userNames.get(socket.id) || 'User';
+      
+      // Broadcast to all users in the room (except sender)
+      socket.to(roomId).emit('user-screen-sharing-stopped', {
+        socketId: socket.id,
+        userName: userName,
+        roomId: roomId
+      });
+      
+      console.log(`📺 User ${socket.id} (${userName}) stopped screen sharing in room ${roomId}`);
+    } catch (error) {
+      console.error(`❌ Error handling screen sharing stopped: ${error.message}`);
+      socket.emit('error', { message: 'Failed to broadcast screen sharing stop', error: error.message });
+    }
+  });
+
+  // ============================================
   // Handle Chat Messages
   // ============================================
   socket.on('chat-message', (data) => {
