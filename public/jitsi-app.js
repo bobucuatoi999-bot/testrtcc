@@ -13,8 +13,22 @@ let roomHasPassword = false;
 let socket = null;
 let participantCount = 0;
 
-// Server URL (from config.js or default)
-const SERVER_URL = window.SERVER_URL || 'http://localhost:3000';
+// Server URL (from config.js or auto-detect from current location)
+// config.js should set window.SERVER_URL to Railway URL
+// If not set, try to auto-detect from current window location
+let SERVER_URL = window.SERVER_URL;
+if (!SERVER_URL) {
+    // Auto-detect: if we're on Railway, use current origin
+    if (window.location.hostname.includes('railway.app') || window.location.hostname.includes('railway')) {
+        SERVER_URL = window.location.origin;
+        console.log('🌐 Auto-detected server URL from Railway:', SERVER_URL);
+    } else {
+        // Fallback to localhost for local development
+        SERVER_URL = 'http://localhost:3000';
+        console.log('🏠 Using localhost for local development');
+    }
+}
+console.log('📡 Using server URL:', SERVER_URL);
 
 // ============================================
 // Socket.io Connection for Room Management
