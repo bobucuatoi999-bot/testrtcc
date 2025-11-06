@@ -817,14 +817,14 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
                 }, 2000);
             }
         }
-        } catch (error) {
-            console.error(`❌ Error waiting for consumed event for producer ${producerId}:`, error);
-            // Retry the whole consumption process
-            setTimeout(() => {
-                console.log(`🔄 Retrying consumption for producer ${producerId}...`);
-                consumeProducer(producerId, socketId, kind, remoteUserName);
-            }, 3000);
-        }
+    } catch (error) {
+        console.error(`❌ Error waiting for consumed event for producer ${producerId}:`, error);
+        // Retry the whole consumption process
+        setTimeout(() => {
+            console.log(`🔄 Retrying consumption for producer ${producerId}...`);
+            consumeProducer(producerId, socketId, kind, remoteUserName);
+        }, 3000);
+    }
 
     } catch (error) {
         console.error(`❌ Error setting up consumer for producer ${producerId}:`, error);
