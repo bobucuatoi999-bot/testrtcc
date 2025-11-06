@@ -200,13 +200,24 @@ function initializeSocket() {
                     throw new Error('Device not initialized');
                 }
 
+                // Ensure device is loaded before creating transport
+                if (!device.loaded) {
+                    throw new Error('Device not loaded yet');
+                }
+
+                // Extract ICE servers array from the server response
+                // Server sends: { iceServers: [...], iceCandidatePoolSize: 10 }
+                const iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
+                
+                console.log('📡 Creating send transport with ICE servers:', iceServersArray.length, 'servers');
+
                 // Create send transport
                 sendTransport = device.createSendTransport({
                     id: data.id,
                     iceParameters: data.iceParameters,
                     iceCandidates: data.iceCandidates,
                     dtlsParameters: data.dtlsParameters,
-                    iceServers: iceServers?.iceServers || [],
+                    iceServers: iceServersArray,
                     iceTransportPolicy: 'all'
                 });
 
@@ -277,13 +288,23 @@ function initializeSocket() {
                     throw new Error('Device not initialized');
                 }
 
+                // Ensure device is loaded before creating transport
+                if (!device.loaded) {
+                    throw new Error('Device not loaded yet');
+                }
+
+                // Extract ICE servers array from the server response
+                const iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
+                
+                console.log('📡 Creating recv transport with ICE servers:', iceServersArray.length, 'servers');
+
                 // Create receive transport
                 recvTransport = device.createRecvTransport({
                     id: data.id,
                     iceParameters: data.iceParameters,
                     iceCandidates: data.iceCandidates,
                     dtlsParameters: data.dtlsParameters,
-                    iceServers: iceServers?.iceServers || [],
+                    iceServers: iceServersArray,
                     iceTransportPolicy: 'all'
                 });
 
@@ -419,7 +440,13 @@ async function initializeDevice() {
         // Load router RTP capabilities into device
         await device.load({ routerRtpCapabilities: rtpCapabilities });
 
+        // Verify device is loaded before accessing properties
+        if (!device.loaded) {
+            throw new Error('Device failed to load');
+        }
+
         console.log('✅ Mediasoup Device initialized');
+        console.log('📋 Device loaded:', device.loaded);
         console.log('📋 Device RTP capabilities:', device.rtpCapabilities);
 
     } catch (error) {
@@ -435,14 +462,18 @@ async function initializeDevice() {
 
 /**
  * Create send and receive transports
+ * Note: Only create send transport here. Recv transport is created after send transport is ready.
  */
 async function createTransports() {
     try {
-        // Create send transport
-        socket.emit('create-send-transport', { roomId: currentRoomId });
+        if (!device || !device.loaded) {
+            throw new Error('Device not loaded');
+        }
         
-        // Create receive transport
-        socket.emit('create-recv-transport', { roomId: currentRoomId });
+        console.log('🚀 Creating send transport...');
+        // Create send transport first
+        // The send-transport-created handler will automatically create recv transport
+        socket.emit('create-send-transport', { roomId: currentRoomId });
 
     } catch (error) {
         console.error('❌ Error creating transports:', error);
