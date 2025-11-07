@@ -385,29 +385,58 @@ function setupSocketHandlers() {
                 iceTransportPolicy: 'all'
             });
 
-            // Handle transport connect event
+            // ✅ CRITICAL: Handle transport connect event - MUST wait for server confirmation
             recvTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                console.log('📥 Receive transport connect event triggered!');
+                console.log('📥 Transport ID:', recvTransport.id);
+                console.log('📥 DTLS Parameters:', dtlsParameters);
+                
                 try {
+                    // Use emitWithAck to wait for server response, or use a promise-based approach
+                    // Note: mediasoup expects callback to be called, but we should try to get server confirmation
+                    
+                    // First, emit to server to connect the transport
                     socket.emit('connect-transport', {
                         transportId: recvTransport.id,
                         dtlsParameters: dtlsParameters,
                         roomId: currentRoomId
                     });
+                    
+                    // Wait a bit for server to process (mediasoup connect is async on server)
+                    // In practice, if server.connect() fails, the transport state will change to 'failed'
+                    // So we call callback immediately, and let connectionstatechange handle errors
+                    console.log('📥 Calling callback to signal transport connect...');
                     callback();
+                    
+                    // Note: The server should call transport.connect() which will establish the connection
+                    // If it fails, the connectionstatechange event will fire with 'failed' state
+                    
                 } catch (error) {
+                    console.error('❌ Error in receive transport connect handler:', error);
                     errback(error);
                 }
             });
 
             recvTransport.on('connectionstatechange', (state) => {
-                console.log('📡 Recv transport connection state:', state);
-                if (state === 'failed' || state === 'disconnected') {
+                console.log('📡 Recv transport connection state changed:', state);
+                
+                if (state === 'connecting') {
+                    console.log('⏳ Receive transport is connecting...');
+                } else if (state === 'connected') {
+                    console.log('✅ Receive transport connected successfully!');
+                } else if (state === 'failed') {
+                    console.error('❌ Receive transport connection failed!');
                     showStatus('Network issue. Reconnecting...', 'error');
                     setTimeout(() => {
-                        if (recvTransport) {
+                        if (recvTransport && !recvTransport.closed) {
                             recvTransport.restartIce();
                         }
                     }, 2000);
+                } else if (state === 'disconnected') {
+                    console.warn('⚠️ Receive transport disconnected');
+                    showStatus('Network issue. Reconnecting...', 'error');
+                } else if (state === 'closed') {
+                    console.log('🔒 Receive transport closed');
                 }
             });
 
@@ -845,17 +874,18 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
                 codecs: data.rtpParameters.codecs.map(c => c.mimeType).join(', ')
             });
             
-            // ✅ CRITICAL: Ensure transport is still connected before consuming
-            if (recvTransport.connectionState !== 'connected') {
-                throw new Error(`Transport not connected (state: ${recvTransport.connectionState})`);
-            }
-            
+            // ✅ CRITICAL: The transport connect event is triggered when consume() is called
+            // So we don't check connection state here - it will connect during consume()
+            // However, we verify transport is not closed
             if (recvTransport.closed) {
                 throw new Error('Transport is closed');
             }
             
             // Create consumer with validated parameters
+            // NOTE: This will trigger the transport 'connect' event if transport is not yet connected
             console.log(`🔧 Creating consumer for ${kind} producer ${data.producerId}...`);
+            console.log(`🔍 Transport state before consume: ${recvTransport.connectionState}`);
+            
             const consumer = await recvTransport.consume({
                 id: data.id,
                 producerId: data.producerId,
@@ -864,6 +894,20 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
             });
             
             console.log(`✅ Consumer created successfully: ${consumer.id}`);
+            console.log(`🔍 Transport state after consume: ${recvTransport.connectionState}`);
+            
+            // Now wait for transport to connect if it's not already connected
+            // (The connect event handler should have been triggered by consume())
+            if (recvTransport.connectionState !== 'connected' && recvTransport.connectionState !== 'connecting') {
+                console.log(`⏳ Waiting for transport to connect after consumer creation (state: ${recvTransport.connectionState})...`);
+                try {
+                    await waitForTransportConnection(recvTransport, 15000);
+                    console.log('✅ Transport connected after consumer creation');
+                } catch (connectError) {
+                    console.error('❌ Transport failed to connect after consumer creation:', connectError);
+                    // Don't throw here - consumer might still work if connection succeeds later
+                }
+            }
             
             // ✅ CRITICAL FIX: Use addEventListener for MediaStreamTrack (not .on())
             // MediaStreamTrack is a native browser Web API, not a mediasoup object

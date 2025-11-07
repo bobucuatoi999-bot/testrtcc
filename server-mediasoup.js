@@ -477,33 +477,58 @@ io.on('connection', (socket) => {
       const { transportId, dtlsParameters, roomId } = data || {};
 
       if (!transportId || !dtlsParameters || !roomId) {
+        console.error('❌ Missing transport parameters for connect-transport');
         socket.emit('error', { message: 'Missing transport parameters' });
         return;
       }
 
       const userTransports = roomTransports.get(roomId)?.get(socket.id);
       if (!userTransports) {
+        console.error(`❌ User transports not found for socket ${socket.id} in room ${roomId}`);
         socket.emit('error', { message: 'Transport not found' });
         return;
       }
 
-      const transport = userTransports.sendTransport?.id === transportId
-        ? userTransports.sendTransport
-        : userTransports.recvTransport;
+      // Find the transport (could be send or receive)
+      let transport = null;
+      let transportType = 'unknown';
+      
+      if (userTransports.sendTransport && userTransports.sendTransport.id === transportId) {
+        transport = userTransports.sendTransport;
+        transportType = 'send';
+      } else if (userTransports.recvTransport && userTransports.recvTransport.id === transportId) {
+        transport = userTransports.recvTransport;
+        transportType = 'recv';
+      }
 
       if (!transport) {
+        console.error(`❌ Transport ${transportId} not found for socket ${socket.id}`);
         socket.emit('error', { message: 'Transport not found' });
         return;
       }
 
+      console.log(`🔌 Connecting ${transportType} transport ${transportId} for user ${socket.id}...`);
+      
+      // ✅ CRITICAL: Connect the transport with DTLS parameters
       await transport.connect({ dtlsParameters });
-      socket.emit('transport-connected', { transportId });
-
-      console.log(`✅ Transport ${transportId} connected for user ${socket.id}`);
+      
+      console.log(`✅ ${transportType} Transport ${transportId} connected successfully for user ${socket.id}`);
+      
+      // Emit confirmation to client (though callback may have already been called)
+      socket.emit('transport-connected', { transportId, type: transportType });
 
     } catch (error) {
       console.error(`❌ Error connecting transport:`, error);
-      socket.emit('error', { message: 'Failed to connect transport', error: error.message });
+      console.error('Error details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack
+      });
+      socket.emit('error', { 
+        message: 'Failed to connect transport', 
+        error: error.message,
+        code: 'TRANSPORT_CONNECT_ERROR'
+      });
     }
   });
 
