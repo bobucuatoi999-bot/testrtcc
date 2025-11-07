@@ -3,7 +3,15 @@ const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
 const path = require('path');
-require('dotenv').config();
+
+// Load environment variables (optional - for local development)
+// Render/Railway provide env vars directly, so dotenv is only needed locally
+try {
+  require('dotenv').config();
+} catch (error) {
+  // dotenv not installed or not needed in production
+  // Environment variables are provided by the hosting platform
+}
 
 const { createToken, verifyToken } = require('./lib/jwt');
 const { getTurnCredentials } = require('./routes/turn');
