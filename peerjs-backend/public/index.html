@@ -629,7 +629,7 @@
           
           roomId = response.roomId;
           userId = response.userId;
-          peerId = response.peerId;
+          // peerId is already set from PeerJS
           displayName = name;
           
           users.set(userId, {
@@ -641,7 +641,8 @@
           enterRoom();
           
           // No existing users for new room
-          // Wait for others to join
+          // Wait for others to join (they will call us)
+          console.log('✅ Room created, waiting for others to join...');
         });
       } catch (error) {
         console.error('❌ Error creating room:', error);
@@ -706,21 +707,28 @@
             displayName,
           });
           
+          // Store our peerId on server
+          peerId = peerId; // Already set from PeerJS
+          
           // Add existing users
           response.users.forEach(user => {
             users.set(user.userId, user);
+            console.log(`📋 Existing user: ${user.displayName} (peerId: ${user.peerId})`);
           });
           
           enterRoom();
           
-          // CRITICAL: New joiner calls ALL existing users
-          // This ensures bidirectional connections
-          console.log(`📞 Calling ${response.users.length} existing users...`);
-          response.users.forEach((user, index) => {
-            setTimeout(() => {
-              callUser(user.peerId, user.userId);
-            }, index * 300); // Stagger calls slightly
-          });
+          // CRITICAL FIX: New joiner calls ALL existing users
+          // Wait a bit to ensure PeerJS is fully ready
+          setTimeout(() => {
+            console.log(`📞 Initiating calls to ${response.users.length} existing users...`);
+            response.users.forEach((user, index) => {
+              setTimeout(() => {
+                console.log(`📞 Calling ${user.displayName} (${user.peerId})...`);
+                callUser(user.peerId, user.userId);
+              }, index * 500); // Stagger calls more to avoid race conditions
+            });
+          }, 1000); // Wait 1 second for PeerJS to be fully ready
         });
       } catch (error) {
         console.error('❌ Error joining room:', error);
@@ -730,35 +738,53 @@
       }
     }
     
-    // Call a user using PeerJS
+    // Call a user using PeerJS (with retry and validation)
     function callUser(targetPeerId, targetUserId) {
-      if (!peer || !localStream) {
-        console.warn('⚠️ Cannot call: peer or stream not ready');
+      // Validation
+      if (!peer) {
+        console.error('❌ Cannot call: PeerJS not initialized');
         return;
       }
       
+      if (!localStream) {
+        console.error('❌ Cannot call: No local stream');
+        return;
+      }
+      
+      if (!targetPeerId || targetPeerId === peerId) {
+        console.warn('⚠️ Invalid target peerId:', targetPeerId);
+        return;
+      }
+      
+      // Check if call already exists and is active
       if (calls.has(targetPeerId)) {
-        console.log(`⚠️ Call already exists to ${targetPeerId}, checking connection...`);
         const existingCall = calls.get(targetPeerId);
-        // Check if call is still active
-        if (existingCall.open) {
-          return; // Call is active
+        if (existingCall && existingCall.open) {
+          console.log(`✅ Call already active to ${targetPeerId}`);
+          return;
         } else {
-          // Call is closed, remove it
+          // Call exists but is closed, remove it
+          console.log(`🔄 Removing closed call to ${targetPeerId}`);
           calls.delete(targetPeerId);
         }
       }
       
-      console.log(`📞 Calling ${targetPeerId}...`);
+      console.log(`📞 Calling ${targetPeerId} (userId: ${targetUserId})...`);
       
       try {
+        // Verify PeerJS is open
+        if (peer.disconnected || peer.destroyed) {
+          console.error('❌ PeerJS is disconnected or destroyed');
+          return;
+        }
+        
         const call = peer.call(targetPeerId, localStream);
         
         if (!call) {
-          console.error('❌ Failed to create call to:', targetPeerId);
-          // Retry after a short delay
+          console.error(`❌ Failed to create call to ${targetPeerId}`);
+          // Retry after delay
           setTimeout(() => {
-            if (!calls.has(targetPeerId)) {
+            if (users.has(targetUserId) && !calls.has(targetPeerId)) {
               console.log(`🔄 Retrying call to ${targetPeerId}...`);
               callUser(targetPeerId, targetUserId);
             }
@@ -766,43 +792,94 @@
           return;
         }
         
-        console.log(`✅ Call created to ${targetPeerId}`);
+        console.log(`✅ Call object created to ${targetPeerId}`);
         
         // Handle remote stream
         call.on('stream', (remoteStream) => {
-          console.log(`📥 Received remote stream from ${targetPeerId}:`, {
+          console.log(`✅✅✅ RECEIVED STREAM from ${targetPeerId}:`, {
             videoTracks: remoteStream.getVideoTracks().length,
             audioTracks: remoteStream.getAudioTracks().length,
+            videoEnabled: remoteStream.getVideoTracks()[0]?.enabled,
+            audioEnabled: remoteStream.getAudioTracks()[0]?.enabled,
           });
+          
+          // Update remote stream
           remoteStreams.set(targetPeerId, remoteStream);
           updateVideoGrid();
+          
+          // Log successful connection
+          const user = Array.from(users.values()).find(u => u.peerId === targetPeerId);
+          console.log(`🎉 Successfully connected to ${user?.displayName || targetPeerId}!`);
         });
         
+        // Handle call close
         call.on('close', () => {
           console.log(`📴 Call closed with ${targetPeerId}`);
           calls.delete(targetPeerId);
           remoteStreams.delete(targetPeerId);
           updateVideoGrid();
+          
+          // Try to reconnect if user is still in room
+          if (users.has(targetUserId)) {
+            setTimeout(() => {
+              if (users.has(targetUserId) && !calls.has(targetPeerId)) {
+                console.log(`🔄 Attempting to reconnect to ${targetPeerId}...`);
+                callUser(targetPeerId, targetUserId);
+              }
+            }, 3000);
+          }
         });
         
+        // Handle call errors
         call.on('error', (error) => {
           console.error(`❌ Call error with ${targetPeerId}:`, error);
-          // Try to reconnect on error
-          calls.delete(targetPeerId);
-          setTimeout(() => {
-            if (!calls.has(targetPeerId)) {
-              console.log(`🔄 Retrying call to ${targetPeerId} after error...`);
-              callUser(targetPeerId, targetUserId);
-            }
-          }, 3000);
+          
+          // Don't retry immediately on certain errors
+          if (error.type === 'peer-unavailable') {
+            console.warn(`⚠️ Peer ${targetPeerId} unavailable, will retry later`);
+            setTimeout(() => {
+              if (users.has(targetUserId) && !calls.has(targetPeerId)) {
+                console.log(`🔄 Retrying call to ${targetPeerId} (peer was unavailable)...`);
+                callUser(targetPeerId, targetUserId);
+              }
+            }, 5000);
+          } else {
+            // Retry on other errors
+            calls.delete(targetPeerId);
+            setTimeout(() => {
+              if (users.has(targetUserId) && !calls.has(targetPeerId)) {
+                console.log(`🔄 Retrying call to ${targetPeerId} after error...`);
+                callUser(targetPeerId, targetUserId);
+              }
+            }, 3000);
+          }
         });
         
+        // Store call
         calls.set(targetPeerId, call);
-      } catch (error) {
-        console.error(`❌ Error calling user ${targetPeerId}:`, error);
-        // Retry on error
+        
+        // Set timeout to detect if call never connects
         setTimeout(() => {
-          if (!calls.has(targetPeerId)) {
+          if (calls.has(targetPeerId) && !remoteStreams.has(targetPeerId)) {
+            console.warn(`⚠️ Call to ${targetPeerId} hasn't received stream after 5s, retrying...`);
+            const callToClose = calls.get(targetPeerId);
+            if (callToClose) {
+              callToClose.close();
+              calls.delete(targetPeerId);
+              setTimeout(() => {
+                if (users.has(targetUserId)) {
+                  callUser(targetPeerId, targetUserId);
+                }
+              }, 1000);
+            }
+          }
+        }, 5000);
+        
+      } catch (error) {
+        console.error(`❌ Exception calling ${targetPeerId}:`, error);
+        // Retry on exception
+        setTimeout(() => {
+          if (users.has(targetUserId) && !calls.has(targetPeerId)) {
             console.log(`🔄 Retrying call to ${targetPeerId} after exception...`);
             callUser(targetPeerId, targetUserId);
           }
@@ -810,9 +887,38 @@
       }
     }
     
+    // CRITICAL: Ensure all users connect to all other users
+    function ensureAllConnections() {
+      console.log('🔍 Checking connections...');
+      console.log('📊 Current users:', Array.from(users.values()).map(u => ({
+        displayName: u.displayName,
+        peerId: u.peerId,
+        userId: u.userId,
+      })));
+      console.log('📊 Active calls:', Array.from(calls.keys()));
+      console.log('📊 Remote streams:', Array.from(remoteStreams.keys()));
+      
+      // For each user in room (except self), ensure we have a connection
+      users.forEach((user, uid) => {
+        if (uid !== userId && user.peerId !== peerId) {
+          if (!calls.has(user.peerId)) {
+            console.log(`⚠️ Missing connection to ${user.displayName} (${user.peerId}), creating...`);
+            callUser(user.peerId, user.userId);
+          } else if (!remoteStreams.has(user.peerId)) {
+            console.log(`⚠️ Have call but no stream from ${user.displayName} (${user.peerId}), checking...`);
+            const call = calls.get(user.peerId);
+            if (!call || !call.open) {
+              calls.delete(user.peerId);
+              callUser(user.peerId, user.userId);
+            }
+          }
+        }
+      });
+    }
+    
     // Handle user joined
     function handleUserJoined(data) {
-      console.log('👤 User joined:', data);
+      console.log('👤 New user joined:', data);
       users.set(data.userId, {
         userId: data.userId,
         peerId: data.peerId,
@@ -822,12 +928,15 @@
       updateRoomInfo();
       updateVideoGrid();
       
-      // CRITICAL: Existing users call the new user
-      // New user will also call us, but PeerJS handles duplicate calls gracefully
-      console.log(`📞 Calling new user ${data.displayName} (${data.peerId})...`);
+      // CRITICAL FIX: Existing users call the new user
+      // Wait a bit to ensure new user's PeerJS is fully initialized
+      console.log(`📞 Will call new user ${data.displayName} (${data.peerId}) in 1 second...`);
       setTimeout(() => {
-        callUser(data.peerId, data.userId);
-      }, 500); // Small delay to ensure their PeerJS is ready
+        if (users.has(data.userId)) { // User still in room
+          console.log(`📞 Calling new user ${data.displayName} (${data.peerId})...`);
+          callUser(data.peerId, data.userId);
+        }
+      }, 1000); // Wait 1 second for their PeerJS to be ready
     }
     
     // Handle user left
@@ -865,6 +974,17 @@
       document.getElementById('createRoomBtn').textContent = 'Create New Room';
       document.getElementById('joinRoomBtn').disabled = false;
       document.getElementById('joinRoomBtn').textContent = 'Join Room';
+      
+      // CRITICAL: Periodically check and ensure all connections
+      // Run connection check every 3 seconds
+      if (window.connectionCheckInterval) {
+        clearInterval(window.connectionCheckInterval);
+      }
+      window.connectionCheckInterval = setInterval(() => {
+        if (roomId && peer && localStream) {
+          ensureAllConnections();
+        }
+      }, 3000); // Check every 3 seconds
     }
     
     // Update video grid
@@ -1038,9 +1158,19 @@
     
     // Leave room
     function leaveRoom() {
+      // Stop connection check
+      if (window.connectionCheckInterval) {
+        clearInterval(window.connectionCheckInterval);
+        window.connectionCheckInterval = null;
+      }
+      
       // Close all calls
       calls.forEach((call, peerId) => {
-        call.close();
+        try {
+          call.close();
+        } catch (e) {
+          console.warn('Error closing call:', e);
+        }
       });
       calls.clear();
       
@@ -1051,7 +1181,7 @@
       }
       
       // Close PeerJS
-      if (peer) {
+      if (peer && !peer.destroyed) {
         peer.destroy();
         peer = null;
       }
