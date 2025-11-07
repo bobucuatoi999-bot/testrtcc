@@ -437,10 +437,9 @@
     // PEERJS VIDEO CALL APP - ULTRA SIMPLE
     // ============================================
     
-    // Configuration
-    const SIGNALING_SERVER = window.location.origin.includes('localhost') 
-      ? 'http://localhost:3000' 
-      : (window.SIGNALING_SERVER || window.location.origin);
+    // Configuration - AUTO-DETECT: Uses same domain as frontend (all-in-one!)
+    // If frontend is at https://yourapp.railway.app, backend is also at https://yourapp.railway.app
+    const SIGNALING_SERVER = window.location.origin;
     
     // App state
     let socket = null;
