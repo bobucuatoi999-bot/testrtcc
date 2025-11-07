@@ -634,7 +634,56 @@ io.on('connection', (socket) => {
 
     } catch (error) {
       console.error(`❌ Error consuming:`, error);
-      socket.emit('error', { message: 'Failed to consume', error: error.message });
+      console.error('Error details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack
+      });
+      socket.emit('error', { 
+        message: 'Failed to consume', 
+        error: error.message,
+        code: 'CONSUME_ERROR'
+      });
+    }
+  });
+
+  // ============================================
+  // Handle Consumer Resume
+  // ============================================
+
+  socket.on('consumer-resume', async (data) => {
+    try {
+      const { consumerId, roomId } = data || {};
+
+      if (!consumerId || !roomId) {
+        socket.emit('error', { message: 'Missing consumer resume parameters' });
+        return;
+      }
+
+      const userTransports = roomTransports.get(roomId)?.get(socket.id);
+      if (!userTransports) {
+        socket.emit('error', { message: 'User transports not found' });
+        return;
+      }
+
+      const consumer = userTransports.consumers.get(consumerId);
+      if (!consumer) {
+        socket.emit('error', { message: 'Consumer not found' });
+        return;
+      }
+
+      // Resume consumer
+      await consumer.resume();
+      console.log(`✅ Consumer ${consumerId} resumed for user ${socket.id}`);
+
+      socket.emit('consumer-resumed', { consumerId });
+
+    } catch (error) {
+      console.error(`❌ Error resuming consumer:`, error);
+      socket.emit('error', { 
+        message: 'Failed to resume consumer', 
+        error: error.message 
+      });
     }
   });
 

@@ -528,7 +528,14 @@ async function initializeDevice() {
 
         console.log('✅ Mediasoup Device initialized');
         console.log('📋 Device loaded:', device.loaded);
-        console.log('📋 Device RTP capabilities:', device.rtpCapabilities);
+        console.log('📋 Can produce video:', device.canProduce('video'));
+        console.log('📋 Can produce audio:', device.canProduce('audio'));
+        console.log('📋 Device RTP capabilities:', JSON.stringify(device.rtpCapabilities, null, 2));
+        
+        // Validate device can produce
+        if (!device.canProduce('video') && !device.canProduce('audio')) {
+            throw new Error('Device cannot produce video or audio');
+        }
 
     } catch (error) {
         console.error('❌ Error initializing device:', error);
