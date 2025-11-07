@@ -120,19 +120,28 @@ function initializeDOMElements() {
 /**
  * Initialize Socket.io connection
  */
+// Track if socket handlers have been set up
+let socketHandlersInitialized = false;
+
 function initializeSocket() {
     try {
         // Don't reinitialize if socket already exists and is connected/connecting
         if (socket && (socket.connected || socket.connecting)) {
             console.log('✅ Socket already initialized and connected/connecting');
+            // Still set up handlers if not done yet
+            if (!socketHandlersInitialized) {
+                setupSocketHandlers();
+            }
             return;
         }
         
         // Close existing socket if it exists but not connected
         if (socket && !socket.connected) {
             console.log('🔄 Reinitializing socket...');
+            socket.removeAllListeners(); // Remove all old handlers
             socket.disconnect();
             socket = null;
+            socketHandlersInitialized = false;
         }
         
         console.log('🔌 Initializing socket connection to:', SERVER_URL);
@@ -145,316 +154,334 @@ function initializeSocket() {
             timeout: 20000
         });
 
-        socket.on('connect', () => {
-            console.log('✅ Connected to signaling server');
-            showStatus('Connected', 'info');
-        });
-
-        socket.on('disconnect', () => {
-            console.log('❌ Disconnected from signaling server');
-            showStatus('Connection lost. Reconnecting...', 'error');
-        });
-
-        socket.on('connect_error', (error) => {
-            console.error('❌ Connection error:', error);
-            showStatus('Connection error. Please check your internet.', 'error');
-        });
-
-        // Handle room joined
-        socket.on('room-joined', async (data) => {
-            console.log('✅ Room joined:', data);
-            isRoomAdmin = data.isAdmin || false;
-            roomHasPassword = data.hasPassword || false;
-            rtpCapabilities = data.rtpCapabilities;
-            iceServers = data.iceServers;
-            
-            // Display meeting ID
-            displayMeetingId(data.roomId || currentRoomId);
-            
-            // Display password status
-            displayRoomPassword(roomHasPassword);
-            
-            // Update participants list
-            updateParticipantsList();
-            
-            // Initialize Mediasoup Device
-            await initializeDevice();
-            
-            // Create transports
-            await createTransports();
-            
-            // Get existing producers in room
-            socket.emit('get-producers', { roomId: currentRoomId });
-        });
-
-        // Handle new producer (new user joined and started producing)
-        socket.on('new-producer', async (data) => {
-            console.log('👤 New producer:', data);
-            await consumeProducer(data.producerId, data.socketId, data.kind, data.userName);
-        });
-
-        // Handle existing producers (when we join, get list of existing producers)
-        socket.on('existing-producers', async (data) => {
-            console.log('📋 Existing producers:', data);
-            for (const producer of data.producers) {
-                await consumeProducer(producer.producerId, producer.socketId, producer.kind, producer.userName);
-            }
-        });
-
-        // Handle producer closed (user left or stopped producing)
-        socket.on('producer-closed', (data) => {
-            console.log('👋 Producer closed:', data);
-            removeRemoteUser(data.socketId);
-        });
-
-        // Handle send transport created
-        socket.on('send-transport-created', async (data) => {
-            try {
-                if (!device) {
-                    throw new Error('Device not initialized');
-                }
-
-                // Ensure device is loaded before creating transport
-                if (!device.loaded) {
-                    throw new Error('Device not loaded yet');
-                }
-
-                // Extract ICE servers array from the server response
-                // Server sends: { iceServers: [...], iceCandidatePoolSize: 10 }
-                let iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
-                
-                // Validate and clean ICE servers format
-                // Remove any servers with invalid transport types (TLS is not supported)
-                iceServersArray = iceServersArray.filter(server => {
-                    if (server.urls) {
-                        const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
-                        // Check if any URL has invalid transport
-                        const hasInvalidTransport = urls.some(url => {
-                            if (typeof url === 'string') {
-                                // Remove TLS transport (not supported by RTCPeerConnection)
-                                return url.includes('transport=tls') || url.includes('transport=TLS');
-                            }
-                            return false;
-                        });
-                        return !hasInvalidTransport;
-                    }
-                    return true;
-                });
-                
-                console.log('📡 Creating send transport with ICE servers:', iceServersArray.length, 'servers');
-                console.log('📡 ICE servers:', JSON.stringify(iceServersArray, null, 2));
-
-                // Create send transport
-                sendTransport = device.createSendTransport({
-                    id: data.id,
-                    iceParameters: data.iceParameters,
-                    iceCandidates: data.iceCandidates,
-                    dtlsParameters: data.dtlsParameters,
-                    iceServers: iceServersArray,
-                    iceTransportPolicy: 'all'
-                });
-
-                // Handle transport connect event
-                sendTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-                    try {
-                        socket.emit('connect-transport', {
-                            transportId: sendTransport.id,
-                            dtlsParameters: dtlsParameters,
-                            roomId: currentRoomId
-                        });
-                        callback();
-                    } catch (error) {
-                        errback(error);
-                    }
-                });
-
-                // Handle transport produce event (called when transport.produce() is called)
-                sendTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
-                    try {
-                        // Emit to server to create producer
-                        socket.emit('create-producer', {
-                            transportId: sendTransport.id,
-                            kind: kind,
-                            rtpParameters: rtpParameters,
-                            roomId: currentRoomId
-                        });
-                        
-                        // Wait for producer ID from server
-                        socket.once('producer-created', (data) => {
-                            if (data.kind === kind) {
-                                callback({ id: data.producerId });
-                            }
-                        });
-                    } catch (error) {
-                        console.error('❌ Error in produce handler:', error);
-                        errback(error);
-                    }
-                });
-
-                sendTransport.on('connectionstatechange', (state) => {
-                    console.log('📡 Send transport connection state:', state);
-                    if (state === 'failed' || state === 'disconnected') {
-                        showStatus('Network issue. Reconnecting...', 'error');
-                        setTimeout(() => {
-                            if (sendTransport) {
-                                sendTransport.restartIce();
-                            }
-                        }, 2000);
-                    }
-                });
-
-                console.log('✅ Send transport created');
-
-                // After send transport is ready, create recv transport
-                socket.emit('create-recv-transport', { roomId: currentRoomId });
-
-            } catch (error) {
-                console.error('❌ Error handling send transport:', error);
-                showStatus('Failed to create send transport', 'error');
-            }
-        });
-
-        // Handle receive transport created
-        socket.on('recv-transport-created', async (data) => {
-            try {
-                if (!device) {
-                    throw new Error('Device not initialized');
-                }
-
-                // Ensure device is loaded before creating transport
-                if (!device.loaded) {
-                    throw new Error('Device not loaded yet');
-                }
-
-                // Extract ICE servers array from the server response
-                let iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
-                
-                // Validate and clean ICE servers format (same as send transport)
-                iceServersArray = iceServersArray.filter(server => {
-                    if (server.urls) {
-                        const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
-                        const hasInvalidTransport = urls.some(url => {
-                            if (typeof url === 'string') {
-                                return url.includes('transport=tls') || url.includes('transport=TLS');
-                            }
-                            return false;
-                        });
-                        return !hasInvalidTransport;
-                    }
-                    return true;
-                });
-                
-                console.log('📡 Creating recv transport with ICE servers:', iceServersArray.length, 'servers');
-
-                // Create receive transport
-                recvTransport = device.createRecvTransport({
-                    id: data.id,
-                    iceParameters: data.iceParameters,
-                    iceCandidates: data.iceCandidates,
-                    dtlsParameters: data.dtlsParameters,
-                    iceServers: iceServersArray,
-                    iceTransportPolicy: 'all'
-                });
-
-                // Handle transport connect event
-                recvTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-                    try {
-                        socket.emit('connect-transport', {
-                            transportId: recvTransport.id,
-                            dtlsParameters: dtlsParameters,
-                            roomId: currentRoomId
-                        });
-                        callback();
-                    } catch (error) {
-                        errback(error);
-                    }
-                });
-
-                recvTransport.on('connectionstatechange', (state) => {
-                    console.log('📡 Recv transport connection state:', state);
-                    if (state === 'failed' || state === 'disconnected') {
-                        showStatus('Network issue. Reconnecting...', 'error');
-                        setTimeout(() => {
-                            if (recvTransport) {
-                                recvTransport.restartIce();
-                            }
-                        }, 2000);
-                    }
-                });
-
-                console.log('✅ Receive transport created');
-
-                // After both transports are ready, start producing local media
-                if (sendTransport && recvTransport) {
-                    await startProducingLocalMedia();
-                }
-
-            } catch (error) {
-                console.error('❌ Error handling recv transport:', error);
-                showStatus('Failed to create receive transport', 'error');
-            }
-        });
-
-        // Handle chat messages
-        socket.on('chat-message', (messageData) => {
-            if (!messageData) return;
-            const isOwnMessage = messageData.socketId === socket.id;
-            displayChatMessage(messageData, isOwnMessage);
-        });
-
-        // Handle chat history
-        socket.on('chat-history', (data) => {
-            if (!data || !data.messages || !Array.isArray(data.messages)) return;
-            const chatMessages = document.getElementById('chatMessages');
-            if (!chatMessages) return;
-            chatMessages.innerHTML = '';
-            data.messages.forEach(messageData => {
-                const isOwnMessage = messageData.socketId === socket.id;
-                displayChatMessage(messageData, isOwnMessage);
-            });
-            updateChatMessageCount();
-        });
-
-        // Handle password errors
-        socket.on('error', (data) => {
-            console.error('❌ Server error:', data);
-            if (data.code === 'WRONG_PASSWORD' || (data.message && data.message.includes('password'))) {
-                showPasswordModal();
-                const errorDiv = document.getElementById('passwordError');
-                if (errorDiv) {
-                    errorDiv.textContent = data.message || 'Incorrect password';
-                    errorDiv.style.display = 'block';
-                }
-            } else {
-                showStatus(data.message || 'An error occurred', 'error');
-            }
-        });
-
-        // Handle password set/reset success
-        socket.on('password-set-success', () => {
-            roomHasPassword = true;
-            displayRoomPassword(true);
-            updateParticipantsList();
-            showStatus('Password set successfully', 'success');
-        });
-
-        socket.on('password-reset-success', () => {
-            roomHasPassword = false;
-            displayRoomPassword(false);
-            updateParticipantsList();
-            showStatus('Password removed successfully', 'success');
-        });
-
-        socket.on('room-password-updated', (data) => {
-            roomHasPassword = data.hasPassword || false;
-            displayRoomPassword(roomHasPassword);
-            updateParticipantsList();
-        });
+        // Set up socket handlers (only once)
+        setupSocketHandlers();
 
     } catch (error) {
         console.error('❌ Error initializing socket:', error);
         showStatus('Failed to connect to server', 'error');
     }
+}
+
+/**
+ * Set up socket event handlers (called once per socket instance)
+ */
+function setupSocketHandlers() {
+    if (socketHandlersInitialized || !socket) {
+        return;
+    }
+    
+    console.log('📡 Setting up socket event handlers...');
+    
+    socket.on('connect', () => {
+        console.log('✅ Connected to signaling server');
+        showStatus('Connected', 'info');
+    });
+
+    socket.on('disconnect', () => {
+        console.log('❌ Disconnected from signaling server');
+        showStatus('Connection lost. Reconnecting...', 'error');
+    });
+
+    socket.on('connect_error', (error) => {
+        console.error('❌ Connection error:', error);
+        showStatus('Connection error. Please check your internet.', 'error');
+    });
+
+    // Handle room joined
+    socket.on('room-joined', async (data) => {
+        console.log('✅ Room joined:', data);
+        isRoomAdmin = data.isAdmin || false;
+        roomHasPassword = data.hasPassword || false;
+        rtpCapabilities = data.rtpCapabilities;
+        iceServers = data.iceServers;
+        
+        // Display meeting ID
+        displayMeetingId(data.roomId || currentRoomId);
+        
+        // Display password status
+        displayRoomPassword(roomHasPassword);
+        
+        // Update participants list
+        updateParticipantsList();
+        
+        // Initialize Mediasoup Device
+        await initializeDevice();
+        
+        // Create transports
+        await createTransports();
+        
+        // Get existing producers in room
+        socket.emit('get-producers', { roomId: currentRoomId });
+    });
+
+    // Handle new producer (new user joined and started producing)
+    socket.on('new-producer', async (data) => {
+        console.log('👤 New producer:', data);
+        await consumeProducer(data.producerId, data.socketId, data.kind, data.userName);
+    });
+
+    // Handle existing producers (when we join, get list of existing producers)
+    socket.on('existing-producers', async (data) => {
+        console.log('📋 Existing producers:', data);
+        for (const producer of data.producers) {
+            await consumeProducer(producer.producerId, producer.socketId, producer.kind, producer.userName);
+        }
+    });
+
+    // Handle producer closed (user left or stopped producing)
+    socket.on('producer-closed', (data) => {
+        console.log('👋 Producer closed:', data);
+        removeRemoteUser(data.socketId);
+    });
+
+    // Handle send transport created
+    socket.on('send-transport-created', async (data) => {
+        try {
+            if (!device) {
+                throw new Error('Device not initialized');
+            }
+
+            // Ensure device is loaded before creating transport
+            if (!device.loaded) {
+                throw new Error('Device not loaded yet');
+            }
+
+            // Extract ICE servers array from the server response
+            // Server sends: { iceServers: [...], iceCandidatePoolSize: 10 }
+            let iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
+            
+            // Validate and clean ICE servers format
+            // Remove any servers with invalid transport types (TLS is not supported)
+            iceServersArray = iceServersArray.filter(server => {
+                if (server.urls) {
+                    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+                    // Check if any URL has invalid transport
+                    const hasInvalidTransport = urls.some(url => {
+                        if (typeof url === 'string') {
+                            // Remove TLS transport (not supported by RTCPeerConnection)
+                            return url.includes('transport=tls') || url.includes('transport=TLS');
+                        }
+                        return false;
+                    });
+                    return !hasInvalidTransport;
+                }
+                return true;
+            });
+            
+            console.log('📡 Creating send transport with ICE servers:', iceServersArray.length, 'servers');
+            console.log('📡 ICE servers:', JSON.stringify(iceServersArray, null, 2));
+
+            // Create send transport
+            sendTransport = device.createSendTransport({
+                id: data.id,
+                iceParameters: data.iceParameters,
+                iceCandidates: data.iceCandidates,
+                dtlsParameters: data.dtlsParameters,
+                iceServers: iceServersArray,
+                iceTransportPolicy: 'all'
+            });
+
+            // Handle transport connect event
+            sendTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                try {
+                    socket.emit('connect-transport', {
+                        transportId: sendTransport.id,
+                        dtlsParameters: dtlsParameters,
+                        roomId: currentRoomId
+                    });
+                    callback();
+                } catch (error) {
+                    errback(error);
+                }
+            });
+
+            // Handle transport produce event (called when transport.produce() is called)
+            sendTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
+                try {
+                    // Emit to server to create producer
+                    socket.emit('create-producer', {
+                        transportId: sendTransport.id,
+                        kind: kind,
+                        rtpParameters: rtpParameters,
+                        roomId: currentRoomId
+                    });
+                    
+                    // Wait for producer ID from server
+                    socket.once('producer-created', (data) => {
+                        if (data.kind === kind) {
+                            callback({ id: data.producerId });
+                        }
+                    });
+                } catch (error) {
+                    console.error('❌ Error in produce handler:', error);
+                    errback(error);
+                }
+            });
+
+            sendTransport.on('connectionstatechange', (state) => {
+                console.log('📡 Send transport connection state:', state);
+                if (state === 'failed' || state === 'disconnected') {
+                    showStatus('Network issue. Reconnecting...', 'error');
+                    setTimeout(() => {
+                        if (sendTransport) {
+                            sendTransport.restartIce();
+                        }
+                    }, 2000);
+                }
+            });
+
+            console.log('✅ Send transport created');
+
+            // After send transport is ready, create recv transport
+            socket.emit('create-recv-transport', { roomId: currentRoomId });
+
+        } catch (error) {
+            console.error('❌ Error handling send transport:', error);
+            showStatus('Failed to create send transport', 'error');
+        }
+    });
+
+    // Handle receive transport created
+    socket.on('recv-transport-created', async (data) => {
+        try {
+            if (!device) {
+                throw new Error('Device not initialized');
+            }
+
+            // Ensure device is loaded before creating transport
+            if (!device.loaded) {
+                throw new Error('Device not loaded yet');
+            }
+
+            // Extract ICE servers array from the server response
+            let iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
+            
+            // Validate and clean ICE servers format (same as send transport)
+            iceServersArray = iceServersArray.filter(server => {
+                if (server.urls) {
+                    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+                    const hasInvalidTransport = urls.some(url => {
+                        if (typeof url === 'string') {
+                            return url.includes('transport=tls') || url.includes('transport=TLS');
+                        }
+                        return false;
+                    });
+                    return !hasInvalidTransport;
+                }
+                return true;
+            });
+            
+            console.log('📡 Creating recv transport with ICE servers:', iceServersArray.length, 'servers');
+
+            // Create receive transport
+            recvTransport = device.createRecvTransport({
+                id: data.id,
+                iceParameters: data.iceParameters,
+                iceCandidates: data.iceCandidates,
+                dtlsParameters: data.dtlsParameters,
+                iceServers: iceServersArray,
+                iceTransportPolicy: 'all'
+            });
+
+            // Handle transport connect event
+            recvTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                try {
+                    socket.emit('connect-transport', {
+                        transportId: recvTransport.id,
+                        dtlsParameters: dtlsParameters,
+                        roomId: currentRoomId
+                    });
+                    callback();
+                } catch (error) {
+                    errback(error);
+                }
+            });
+
+            recvTransport.on('connectionstatechange', (state) => {
+                console.log('📡 Recv transport connection state:', state);
+                if (state === 'failed' || state === 'disconnected') {
+                    showStatus('Network issue. Reconnecting...', 'error');
+                    setTimeout(() => {
+                        if (recvTransport) {
+                            recvTransport.restartIce();
+                        }
+                    }, 2000);
+                }
+            });
+
+            console.log('✅ Receive transport created');
+
+            // After both transports are ready, start producing local media
+            if (sendTransport && recvTransport) {
+                await startProducingLocalMedia();
+            }
+
+        } catch (error) {
+            console.error('❌ Error handling recv transport:', error);
+            showStatus('Failed to create receive transport', 'error');
+        }
+    });
+
+    // Handle chat messages
+    socket.on('chat-message', (messageData) => {
+        if (!messageData) return;
+        const isOwnMessage = messageData.socketId === socket.id;
+        displayChatMessage(messageData, isOwnMessage);
+    });
+
+    // Handle chat history
+    socket.on('chat-history', (data) => {
+        if (!data || !data.messages || !Array.isArray(data.messages)) return;
+        const chatMessages = document.getElementById('chatMessages');
+        if (!chatMessages) return;
+        chatMessages.innerHTML = '';
+        data.messages.forEach(messageData => {
+            const isOwnMessage = messageData.socketId === socket.id;
+            displayChatMessage(messageData, isOwnMessage);
+        });
+        updateChatMessageCount();
+    });
+
+    // Handle password errors
+    socket.on('error', (data) => {
+        console.error('❌ Server error:', data);
+        if (data.code === 'WRONG_PASSWORD' || (data.message && data.message.includes('password'))) {
+            showPasswordModal();
+            const errorDiv = document.getElementById('passwordError');
+            if (errorDiv) {
+                errorDiv.textContent = data.message || 'Incorrect password';
+                errorDiv.style.display = 'block';
+            }
+        } else {
+            showStatus(data.message || 'An error occurred', 'error');
+        }
+    });
+
+    // Handle password set/reset success
+    socket.on('password-set-success', () => {
+        roomHasPassword = true;
+        displayRoomPassword(true);
+        updateParticipantsList();
+        showStatus('Password set successfully', 'success');
+    });
+
+    socket.on('password-reset-success', () => {
+        roomHasPassword = false;
+        displayRoomPassword(false);
+        updateParticipantsList();
+        showStatus('Password removed successfully', 'success');
+    });
+
+    socket.on('room-password-updated', (data) => {
+        roomHasPassword = data.hasPassword || false;
+        displayRoomPassword(roomHasPassword);
+        updateParticipantsList();
+    });
+    
+    // Mark handlers as initialized
+    socketHandlersInitialized = true;
+    console.log('✅ Socket event handlers set up');
 }
 
 // ============================================
