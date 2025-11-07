@@ -823,29 +823,16 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
             return;
         }
         
-        // ✅ CRITICAL: Wait for receive transport to be connected before consuming
-        if (recvTransport.connectionState !== 'connected') {
-            console.log(`⏳ Waiting for receive transport to connect... (current state: ${recvTransport.connectionState})`);
-            try {
-                await waitForTransportConnection(recvTransport, 10000);
-                console.log('✅ Receive transport connected');
-            } catch (error) {
-                console.error('❌ Receive transport connection failed:', error);
-                if (retryCount < MAX_CONSUME_RETRIES) {
-                    setTimeout(() => {
-                        consumeProducer(producerId, socketId, kind, remoteUserName, retryCount + 1);
-                    }, 2000);
-                }
-                return;
-            }
-        }
-        
+        // ✅ CRITICAL INSIGHT: The transport connect event is triggered WHEN we call consume()
+        // So we DON'T wait for connection before consuming - consume() will trigger the connect
+        // We just verify transport exists and is not closed
         if (recvTransport.closed) {
             throw new Error('Receive transport is closed');
         }
 
         console.log(`🔄 Requesting to consume ${kind} from producer ${producerId} (user: ${remoteUserName || socketId})`);
         console.log(`🔍 Transport state: ${recvTransport.connectionState}, Device loaded: ${device.loaded}`);
+        console.log(`🔍 NOTE: Transport will connect automatically when consume() is called (if not already connected)`);
         
         // Request to consume this producer
         socket.emit('consume', {
