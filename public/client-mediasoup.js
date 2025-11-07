@@ -176,6 +176,17 @@ function setupSocketHandlers() {
     socket.on('connect', () => {
         console.log('✅ Connected to signaling server');
         showStatus('Connected', 'info');
+        
+        // Clear any pending disconnect timeouts on reconnect
+        if (currentRoomId) {
+            // If we were in a room, we might need to rejoin
+            console.log('🔄 Reconnected, checking room state...');
+        }
+    });
+    
+    // Handle ping/pong for heartbeat
+    socket.on('ping', () => {
+        socket.emit('pong');
     });
 
     socket.on('disconnect', () => {

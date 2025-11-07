@@ -215,11 +215,41 @@ function getRoom(roomId) {
   return roomsMap.get(roomId);
 }
 
-// Handle peer disconnect
-async function handlePeerDisconnect(socketId) {
+// Handle peer disconnect with grace period
+async function handlePeerDisconnect(socketId, immediate = false) {
   const peer = peersMap.get(socketId);
   if (!peer) {
     return;
+  }
+
+  // If immediate cleanup is requested, skip grace period
+  if (immediate) {
+    await cleanupPeer(socketId);
+    return;
+  }
+
+  // Mark peer as disconnecting but don't remove yet
+  peer.disconnecting = true;
+  console.log(`🔌 Peer ${peer.id} marked as disconnecting, starting grace period...`);
+
+  // Give 5 seconds grace period for reconnection
+  peer.disconnectTimeout = setTimeout(async () => {
+    console.log(`⏰ Grace period ended for ${peer.id}, cleaning up`);
+    await cleanupPeer(socketId);
+  }, 5000);
+}
+
+// Actually cleanup peer resources
+async function cleanupPeer(socketId) {
+  const peer = peersMap.get(socketId);
+  if (!peer) {
+    return;
+  }
+
+  // Clear any pending disconnect timeout
+  if (peer.disconnectTimeout) {
+    clearTimeout(peer.disconnectTimeout);
+    peer.disconnectTimeout = null;
   }
 
   const room = getRoom(peer.roomId);
@@ -237,6 +267,7 @@ async function handlePeerDisconnect(socketId) {
   }
 
   peersMap.delete(socketId);
+  console.log(`✅ Peer ${peer.id} cleaned up`);
 }
 
 // Heartbeat mechanism to detect dead connections
