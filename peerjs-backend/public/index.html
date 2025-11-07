@@ -928,15 +928,13 @@
       updateRoomInfo();
       updateVideoGrid();
       
-      // CRITICAL FIX: Existing users call the new user
-      // Wait a bit to ensure new user's PeerJS is fully initialized
-      console.log(`📞 Will call new user ${data.displayName} (${data.peerId}) in 1 second...`);
-      setTimeout(() => {
-        if (users.has(data.userId)) { // User still in room
-          console.log(`📞 Calling new user ${data.displayName} (${data.peerId})...`);
-          callUser(data.peerId, data.userId);
-        }
-      }, 1000); // Wait 1 second for their PeerJS to be ready
+      // CRITICAL FIX: DO NOT call new user here!
+      // New user will call us (they have the list of existing users)
+      // If we both try to call each other, it creates duplicate connections and race conditions
+      // PeerJS mesh works best when only ONE side initiates the call
+      console.log(`ℹ️ New user ${data.displayName} joined. They will call us.`);
+      
+      // The periodic ensureAllConnections() will catch any missed connections
     }
     
     // Handle user left
