@@ -528,6 +528,232 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ============================================
+  // COMPATIBILITY HANDLERS - Frontend uses old event names
+  // ============================================
+
+  // join-room (frontend expects room-joined event)
+  socket.on('join-room', async (data) => {
+    try {
+      const { roomId, userName, password } = data || {};
+      
+      if (!roomId) {
+        socket.emit('error', { message: 'Invalid room ID' });
+        return;
+      }
+
+      const room = getOrCreateRoom(roomId);
+      if (!room.router) {
+        await room.initialize();
+      }
+
+      if (room.isFull()) {
+        socket.emit('error', { message: `Room is full. Maximum ${config.ROOM.MAX_PEERS} users allowed.` });
+        return;
+      }
+
+      const peer = new Peer(socket, room.id, { name: userName || 'User' });
+      room.addPeer(peer);
+      peersMap.set(socket.id, peer);
+      socket.join(room.id);
+
+      // Get router RTP capabilities and ICE servers
+      const rtpCapabilities = room.getRouterRtpCapabilities();
+      const iceServers = { iceServers: [] }; // Add STUN/TURN if needed
+
+      // Emit room-joined event (frontend expects this)
+      socket.emit('room-joined', {
+        roomId: room.id,
+        isAdmin: room.getPeerCount() === 1,
+        hasPassword: false,
+        rtpCapabilities,
+        iceServers
+      });
+
+      // Get existing producers and emit
+      const producers = room.getAllProducers();
+      if (producers.length > 0) {
+        socket.emit('existing-producers', { producers });
+      }
+    } catch (error) {
+      console.error('Error in join-room:', error);
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // create-send-transport (frontend expects send-transport-created event)
+  socket.on('create-send-transport', async (data) => {
+    try {
+      const { roomId } = data;
+      const peer = peersMap.get(socket.id);
+      if (!peer) {
+        socket.emit('error', { message: 'Peer not found' });
+        return;
+      }
+
+      const room = getRoom(roomId);
+      if (!room) {
+        socket.emit('error', { message: 'Room not found' });
+        return;
+      }
+
+      const router = room.getRouter();
+      const transportData = await peer.createTransport(router, 'send');
+      
+      socket.emit('send-transport-created', transportData);
+    } catch (error) {
+      console.error('Error in create-send-transport:', error);
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // create-recv-transport (frontend expects recv-transport-created event)
+  socket.on('create-recv-transport', async (data) => {
+    try {
+      const { roomId } = data;
+      const peer = peersMap.get(socket.id);
+      if (!peer) {
+        socket.emit('error', { message: 'Peer not found' });
+        return;
+      }
+
+      const room = getRoom(roomId);
+      if (!room) {
+        socket.emit('error', { message: 'Room not found' });
+        return;
+      }
+
+      const router = room.getRouter();
+      const transportData = await peer.createTransport(router, 'recv');
+      
+      socket.emit('recv-transport-created', transportData);
+    } catch (error) {
+      console.error('Error in create-recv-transport:', error);
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // connect-transport (frontend uses this name)
+  socket.on('connect-transport', async (data, callback) => {
+    try {
+      const { transportId, dtlsParameters, roomId } = data;
+      const peer = peersMap.get(socket.id);
+      if (!peer) {
+        if (callback) callback({ error: 'Peer not found' });
+        return;
+      }
+
+      await peer.connectTransport(transportId, dtlsParameters);
+      if (callback) callback({ connected: true });
+    } catch (error) {
+      console.error('Error in connect-transport:', error);
+      if (callback) callback({ error: error.message });
+    }
+  });
+
+  // create-producer (frontend expects producer-created event)
+  socket.on('create-producer', async (data) => {
+    try {
+      const { roomId, transportId, kind, rtpParameters } = data;
+      const peer = peersMap.get(socket.id);
+      if (!peer) {
+        socket.emit('error', { message: 'Peer not found' });
+        return;
+      }
+
+      const room = getRoom(roomId);
+      if (!room) {
+        socket.emit('error', { message: 'Room not found' });
+        return;
+      }
+
+      const producer = await peer.produce(transportId, kind, rtpParameters);
+      room.addProducer(producer.id, peer.id, producer);
+
+      socket.emit('producer-created', {
+        producerId: producer.id,
+        kind: producer.kind
+      });
+
+      // Notify other peers
+      room.broadcast('new-producer', {
+        producerId: producer.id,
+        socketId: socket.id,
+        kind: producer.kind,
+        userName: peer.metadata.name || 'User'
+      }, peer.id);
+    } catch (error) {
+      console.error('Error in create-producer:', error);
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // consume (frontend expects consumed event)
+  socket.on('consume', async (data) => {
+    try {
+      const { roomId, producerId, rtpCapabilities } = data;
+      const peer = peersMap.get(socket.id);
+      if (!peer) {
+        socket.emit('error', { message: 'Peer not found' });
+        return;
+      }
+
+      const room = getRoom(roomId);
+      if (!room) {
+        socket.emit('error', { message: 'Room not found' });
+        return;
+      }
+
+      const router = room.getRouter();
+      const consumer = await peer.consume(router, producerId, rtpCapabilities);
+
+      socket.emit('consumed', {
+        id: consumer.id,
+        producerId: consumer.producerId,
+        kind: consumer.kind,
+        rtpParameters: consumer.rtpParameters
+      });
+    } catch (error) {
+      console.error('Error in consume:', error);
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // get-producers (frontend expects existing-producers event)
+  socket.on('get-producers', (data) => {
+    try {
+      const room = getRoom(data.roomId);
+      if (!room) {
+        socket.emit('error', { message: 'Room not found' });
+        return;
+      }
+
+      const producers = room.getAllProducers();
+      socket.emit('existing-producers', { producers });
+    } catch (error) {
+      console.error('Error in get-producers:', error);
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // consumer-resume (frontend uses this name)
+  socket.on('consumer-resume', async (data, callback) => {
+    try {
+      const { consumerId, roomId } = data;
+      const peer = peersMap.get(socket.id);
+      if (!peer) {
+        if (callback) callback({ error: 'Peer not found' });
+        return;
+      }
+
+      peer.resumeConsumer(consumerId);
+      if (callback) callback({ success: true });
+    } catch (error) {
+      console.error('Error in consumer-resume:', error);
+      if (callback) callback({ error: error.message });
+    }
+  });
+
   // Disconnect handler
   socket.on('disconnect', async () => {
     console.log(`🔌 Socket disconnected: ${socket.id}`);
