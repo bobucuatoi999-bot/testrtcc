@@ -883,21 +883,39 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
 
         } catch (error) {
             console.error(`❌ Error consuming producer ${producerId}:`, error);
-            // Retry consuming after a delay
-            if (kind === 'video') {
-                console.log(`🔄 Retrying video consumption for ${socketId}...`);
+            const retryKey = `${producerId}-${socketId}-${kind}`;
+            const currentRetries = consumeRetryAttempts.get(retryKey) || retryCount;
+            
+            // Only retry if we haven't exceeded max retries
+            if (currentRetries < MAX_CONSUME_RETRIES) {
+                consumeRetryAttempts.set(retryKey, currentRetries + 1);
+                const delay = 2000 * (currentRetries + 1); // Exponential backoff
+                console.log(`🔄 Retrying ${kind} consumption for ${socketId}... (attempt ${currentRetries + 1}/${MAX_CONSUME_RETRIES}, delay: ${delay}ms)`);
                 setTimeout(() => {
-                    consumeProducer(producerId, socketId, kind, remoteUserName);
-                }, 2000);
+                    consumeProducer(producerId, socketId, kind, remoteUserName, currentRetries + 1);
+                }, delay);
+            } else {
+                console.error(`❌ Max retries (${MAX_CONSUME_RETRIES}) reached for ${kind} producer ${producerId} from ${socketId}`);
+                consumeRetryAttempts.delete(retryKey);
             }
         }
     } catch (error) {
         console.error(`❌ Error waiting for consumed event for producer ${producerId}:`, error);
-        // Retry the whole consumption process
-        setTimeout(() => {
-            console.log(`🔄 Retrying consumption for producer ${producerId}...`);
-            consumeProducer(producerId, socketId, kind, remoteUserName);
-        }, 3000);
+        const retryKey = `${producerId}-${socketId}-${kind}`;
+        const currentRetries = consumeRetryAttempts.get(retryKey) || retryCount;
+        
+        // Only retry if we haven't exceeded max retries
+        if (currentRetries < MAX_CONSUME_RETRIES) {
+            consumeRetryAttempts.set(retryKey, currentRetries + 1);
+            const delay = 3000 * (currentRetries + 1); // Exponential backoff
+            console.log(`🔄 Retrying consumption for producer ${producerId}... (attempt ${currentRetries + 1}/${MAX_CONSUME_RETRIES}, delay: ${delay}ms)`);
+            setTimeout(() => {
+                consumeProducer(producerId, socketId, kind, remoteUserName, currentRetries + 1);
+            }, delay);
+        } else {
+            console.error(`❌ Max retries (${MAX_CONSUME_RETRIES}) reached for producer ${producerId} from ${socketId}`);
+            consumeRetryAttempts.delete(retryKey);
+        }
     }
 }
 
