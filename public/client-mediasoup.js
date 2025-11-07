@@ -208,11 +208,12 @@ function setupSocketHandlers() {
         // Initialize Mediasoup Device
         await initializeDevice();
         
-        // Create transports
+        // Create transports (this will trigger transport creation)
+        // get-producers will be called after recv transport is ready
         await createTransports();
         
-        // Get existing producers in room
-        socket.emit('get-producers', { roomId: currentRoomId });
+        // Note: get-producers is now called after recv transport is created
+        // (see recv-transport-created handler)
     });
 
     // Handle new producer (new user joined and started producing)
@@ -414,6 +415,11 @@ function setupSocketHandlers() {
 
             // After both transports are ready, start producing local media
             if (sendTransport && recvTransport) {
+                // Get existing producers in room (users already in the room)
+                console.log('📋 Requesting existing producers in room...');
+                socket.emit('get-producers', { roomId: currentRoomId });
+                
+                // Start producing local media
                 await startProducingLocalMedia();
             }
 
