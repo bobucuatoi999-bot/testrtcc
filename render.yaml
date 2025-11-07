@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: webrtc-signaling-backend
+    env: node
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        sync: false  # You'll need to set this manually in Render dashboard
+      - key: CORS_ALLOW_ORIGIN
+        value: '*'
+      - key: MAX_PARTICIPANTS
+        value: '4'
+      - key: MONITORING_ENABLED
+        value: 'false'
+

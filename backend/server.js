@@ -98,7 +98,8 @@ app.use((req, res) => {
 });
 
 // Start server
-const PORT = process.env.APPPORT || 3000;
+// Render.com uses PORT env var, Railway uses APPPORT
+const PORT = process.env.PORT || process.env.APPPORT || 3000;
 const HOST = process.env.APPHOST || '0.0.0.0';
 
 server.listen(PORT, HOST, () => {
