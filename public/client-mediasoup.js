@@ -688,6 +688,49 @@ async function startProducingLocalMedia() {
 const consumeRetryAttempts = new Map(); // Map: `${producerId}-${socketId}-${kind}` -> count
 const MAX_CONSUME_RETRIES = 3;
 
+/**
+ * Wait for transport to be connected
+ */
+function waitForTransportConnection(transport, timeout = 10000) {
+    return new Promise((resolve, reject) => {
+        if (transport.connectionState === 'connected') {
+            resolve();
+            return;
+        }
+        
+        if (transport.closed) {
+            reject(new Error('Transport is closed'));
+            return;
+        }
+        
+        const timer = setTimeout(() => {
+            transport.off('connectionstatechange', handler);
+            reject(new Error('Transport connection timeout'));
+        }, timeout);
+        
+        const handler = () => {
+            if (transport.connectionState === 'connected') {
+                clearTimeout(timer);
+                transport.off('connectionstatechange', handler);
+                resolve();
+            } else if (transport.connectionState === 'failed' || transport.connectionState === 'disconnected') {
+                clearTimeout(timer);
+                transport.off('connectionstatechange', handler);
+                reject(new Error(`Transport connection ${transport.connectionState}`));
+            }
+        };
+        
+        transport.on('connectionstatechange', handler);
+        
+        // Check immediately in case it connected between check and listener
+        if (transport.connectionState === 'connected') {
+            clearTimeout(timer);
+            transport.off('connectionstatechange', handler);
+            resolve();
+        }
+    });
+}
+
 async function consumeProducer(producerId, socketId, kind, remoteUserName, retryCount = 0) {
     try {
         const retryKey = `${producerId}-${socketId}-${kind}`;
@@ -723,8 +766,30 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
             }
             return;
         }
+        
+        // ✅ CRITICAL: Wait for receive transport to be connected before consuming
+        if (recvTransport.connectionState !== 'connected') {
+            console.log(`⏳ Waiting for receive transport to connect... (current state: ${recvTransport.connectionState})`);
+            try {
+                await waitForTransportConnection(recvTransport, 10000);
+                console.log('✅ Receive transport connected');
+            } catch (error) {
+                console.error('❌ Receive transport connection failed:', error);
+                if (retryCount < MAX_CONSUME_RETRIES) {
+                    setTimeout(() => {
+                        consumeProducer(producerId, socketId, kind, remoteUserName, retryCount + 1);
+                    }, 2000);
+                }
+                return;
+            }
+        }
+        
+        if (recvTransport.closed) {
+            throw new Error('Receive transport is closed');
+        }
 
         console.log(`🔄 Requesting to consume ${kind} from producer ${producerId} (user: ${remoteUserName || socketId})`);
+        console.log(`🔍 Transport state: ${recvTransport.connectionState}, Device loaded: ${device.loaded}`);
         
         // Request to consume this producer
         socket.emit('consume', {
@@ -757,13 +822,41 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
         try {
             const data = await consumedPromise;
             
-            // Create consumer
+            // ✅ CRITICAL: Validate consumer parameters before creating consumer
+            if (!data || !data.id || !data.producerId || !data.kind || !data.rtpParameters) {
+                throw new Error('Invalid consumer parameters from server');
+            }
+            
+            if (!data.rtpParameters.codecs || !Array.isArray(data.rtpParameters.codecs) || data.rtpParameters.codecs.length === 0) {
+                throw new Error('Invalid RTP parameters: missing or empty codecs');
+            }
+            
+            console.log(`📦 Received consumer params for ${kind}:`, {
+                id: data.id,
+                producerId: data.producerId,
+                kind: data.kind,
+                codecs: data.rtpParameters.codecs.map(c => c.mimeType).join(', ')
+            });
+            
+            // ✅ CRITICAL: Ensure transport is still connected before consuming
+            if (recvTransport.connectionState !== 'connected') {
+                throw new Error(`Transport not connected (state: ${recvTransport.connectionState})`);
+            }
+            
+            if (recvTransport.closed) {
+                throw new Error('Transport is closed');
+            }
+            
+            // Create consumer with validated parameters
+            console.log(`🔧 Creating consumer for ${kind} producer ${data.producerId}...`);
             const consumer = await recvTransport.consume({
                 id: data.id,
                 producerId: data.producerId,
                 kind: data.kind,
                 rtpParameters: data.rtpParameters
             });
+            
+            console.log(`✅ Consumer created successfully: ${consumer.id}`);
             
             // ✅ CRITICAL FIX: Use addEventListener for MediaStreamTrack (not .on())
             // MediaStreamTrack is a native browser Web API, not a mediasoup object

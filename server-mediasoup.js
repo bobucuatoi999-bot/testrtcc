@@ -592,18 +592,33 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Check if router can consume this producer
+      // ✅ CRITICAL: Check if router can consume this producer
       if (!router.canConsume({ producerId, rtpCapabilities })) {
-        socket.emit('error', { message: 'Cannot consume producer' });
+        console.error(`❌ Cannot consume producer ${producerId} - RTP capabilities mismatch`);
+        console.error('Router RTP capabilities:', JSON.stringify(router.rtpCapabilities, null, 2));
+        console.error('Client RTP capabilities:', JSON.stringify(rtpCapabilities, null, 2));
+        socket.emit('error', { 
+          message: 'Cannot consume producer - incompatible codecs',
+          code: 'RTP_CAPABILITIES_MISMATCH'
+        });
         return;
       }
 
-      // Create consumer
+      // ✅ CRITICAL: Ensure recv transport is connected
+      if (userTransports.recvTransport.connectionState !== 'connected') {
+        console.warn(`⚠️ Recv transport not connected (state: ${userTransports.recvTransport.connectionState}), attempting to connect...`);
+        // Transport should auto-connect, but log warning
+      }
+
+      // Create consumer (start paused, client will resume after setup)
+      console.log(`🔧 Creating consumer for producer ${producerId} (kind: ${producer.kind})...`);
       const consumer = await userTransports.recvTransport.consume({
         producerId,
         rtpCapabilities,
-        paused: false
+        paused: true // ✅ Start paused, client will resume after DOM setup
       });
+      
+      console.log(`✅ Consumer created: ${consumer.id} for producer ${producerId}`);
 
       userTransports.consumers.set(consumer.id, consumer);
 
