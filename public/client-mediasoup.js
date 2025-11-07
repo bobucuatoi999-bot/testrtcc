@@ -994,29 +994,41 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
             return;
         }
         
-        // ✅ CRITICAL INSIGHT: The transport connect event is triggered WHEN we call consume()
-        // So we DON'T wait for connection before consuming - consume() will trigger the connect
-        // We just verify transport exists and is not closed
-        if (recvTransport.closed) {
-            throw new Error('Receive transport is closed');
+        // ✅ CRITICAL: Verify recv transport exists and is valid
+        if (!recvTransport) {
+            console.error('❌ No recv transport available');
+            throw new Error('Recv transport not created');
         }
-        
-        console.log(`🔄 Consuming ${kind} from producer ${producerId}`);
-        
-        // Request to consume this producer
-        socket.emit('consume', {
-            producerId: producerId,
-            rtpCapabilities: device.rtpCapabilities,
-            roomId: currentRoomId
-        });
 
-        // Wait for consumed event with timeout
-        const consumedPromise = new Promise((resolve, reject) => {
+        if (recvTransport.closed) {
+            console.error('❌ Recv transport is closed');
+            throw new Error('Recv transport is closed');
+        }
+
+        // ⭐ Check if connect handler is attached
+        const connectListeners = recvTransport.listenerCount('connect');
+        console.log(`🔍 Connect event listeners: ${connectListeners}`);
+        
+        if (connectListeners === 0) {
+            console.error('❌ CRITICAL: No connect handler attached!');
+            console.error('❌ This will cause consume() to hang forever');
+            throw new Error('Transport connect handler missing');
+        }
+
+        console.log(`✅ Recv transport ready (state: ${recvTransport.connectionState})`);
+        console.log(`🔍 Transport ID: ${recvTransport.id}`);
+        
+        console.log(`🔄 Starting consume for ${kind} from ${socketId}`);
+        
+        // Request consume from server
+        console.log(`📤 Requesting consume for producer ${producerId}...`);
+        
+        const consumerParams = await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 socket.off('consumed', consumedHandler);
-                reject(new Error('Timeout waiting for consumed event'));
-            }, 10000); // 10 second timeout
-            
+                reject(new Error('Consume request timeout (10s)'));
+            }, 10000);
+
             const consumedHandler = async (data) => {
                 if (data.producerId !== producerId) {
                     // This is for a different producer, ignore
@@ -1036,6 +1048,19 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
             };
             
             socket.on('consumed', consumedHandler);
+            
+            // Emit consume request
+            socket.emit('consume', {
+                producerId: producerId,
+                rtpCapabilities: device.rtpCapabilities,
+                roomId: currentRoomId
+            });
+        });
+
+        console.log(`✅ Server approved consume:`, {
+            id: consumerParams.id,
+            producerId: consumerParams.producerId,
+            kind: consumerParams.kind
         });
         
         try {
