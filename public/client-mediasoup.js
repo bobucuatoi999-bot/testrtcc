@@ -973,8 +973,9 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
             recvTransport.once('connect', verifyConnectHandler);
             
             // Create consumer - this will trigger the transport connect event if needed
+            let consumer;
             try {
-                const consumer = await recvTransport.consume({
+                consumer = await recvTransport.consume({
                     id: data.id,
                     producerId: data.producerId,
                     kind: data.kind,
@@ -987,19 +988,62 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
                 
                 // Remove the verification handler
                 recvTransport.off('connect', verifyConnectHandler);
+                
+                // ✅ CRITICAL: If connect event didn't fire, something is wrong
+                if (!connectEventFired && recvTransport.connectionState === 'new') {
+                    console.error('❌ CRITICAL: Connect event did NOT fire during consume()!');
+                    console.error('❌ This means the transport will never connect.');
+                    console.error('❌ Possible causes:');
+                    console.error('   1. Connect handler not properly attached');
+                    console.error('   2. Transport instance mismatch');
+                    console.error('   3. Mediasoup library issue');
+                    
+                    // Try to check handler status
+                    const handlerCount = recvTransport.listenerCount('connect');
+                    console.log(`🔍 Current connect handler count: ${handlerCount}`);
+                    
+                    if (handlerCount === 0) {
+                        throw new Error('Connect handler missing - transport cannot connect');
+                    }
+                }
+                
+            } catch (consumeError) {
+                // Remove verification handler on error
+                recvTransport.off('connect', verifyConnectHandler);
+                throw consumeError;
+            }
             
             // ✅ CRITICAL: Now wait for transport to connect
             // The connect event should have fired during consume(), so we wait for it to complete
             if (recvTransport.connectionState !== 'connected') {
                 console.log(`⏳ Waiting for transport to connect (current state: ${recvTransport.connectionState})...`);
+                console.log(`⏳ Connect event fired: ${connectEventFired}`);
+                
+                // If connect event didn't fire, give it a moment (sometimes it's async)
+                if (!connectEventFired && recvTransport.connectionState === 'new') {
+                    console.log('⏳ Connect event didn\'t fire immediately, waiting 1 second...');
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                    // Check again
+                    if (recvTransport.connectionState === 'new' && !connectEventFired) {
+                        console.error('❌ Connect event still not fired after wait!');
+                        console.error('❌ This indicates the handler is not working properly');
+                    }
+                }
+                
                 try {
                     await waitForTransportConnection(recvTransport, 15000);
                     console.log('✅ Transport connected successfully after consumer creation');
                 } catch (connectError) {
                     console.error('❌ Transport failed to connect:', connectError);
+                    console.error('❌ Connect event fired:', connectEventFired);
+                    console.error('❌ Final transport state:', recvTransport.connectionState);
+                    
                     // Close the consumer if transport failed
                     try {
-                        consumer.close();
+                        if (consumer) {
+                            consumer.close();
+                        }
                     } catch (e) {
                         console.error('Error closing consumer:', e);
                     }
