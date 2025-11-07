@@ -37,10 +37,10 @@ function initializeSocket(): Socket {
   // In production, use VITE_API_URL environment variable
   const socketUrl = isDevelopment 
     ? (API_URL || undefined) // Use explicit URL if provided, otherwise use proxy
-    : (API_URL || 'https://your-backend.railway.app'); // Production: must have API_URL set
+    : (API_URL || 'https://testrtcc-production.up.railway.app'); // Production: default to Railway backend
   
   if (!socketUrl && !isDevelopment) {
-    console.error('❌ VITE_API_URL not set in production! Please set environment variable.');
+    console.error('❌ VITE_API_URL not set in production! Using default: https://testrtcc-production.up.railway.app');
   }
   
   console.log('🔌 Initializing singleton Socket.io connection:', {
