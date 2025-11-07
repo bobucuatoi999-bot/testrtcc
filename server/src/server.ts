@@ -59,7 +59,7 @@ app.get('/debug/rooms', async (_req, res) => {
     const { getAllRooms } = await import('./utils/roomManager.js');
     const rooms = getAllRooms();
     
-    res.json({
+    return res.json({
       totalRooms: rooms.length,
       rooms: rooms.map(room => ({
         id: room.id,
@@ -74,7 +74,7 @@ app.get('/debug/rooms', async (_req, res) => {
       })),
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
