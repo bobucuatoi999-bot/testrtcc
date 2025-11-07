@@ -1,0 +1,18 @@
+{
+  "name": "webrtc-client-vanilla",
+  "version": "1.0.0",
+  "description": "WebRTC video conferencing client - vanilla JS",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "serve": "npx serve . -p 8080"
+  },
+  "devDependencies": {
+    "vite": "^5.0.8"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.6.1"
+  }
+}
+
