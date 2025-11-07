@@ -970,10 +970,28 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
                 createRemoteVideoElement(socketId, remoteUser, consumer.track);
             }
 
-            // Resume consumer (start receiving)
-            await consumer.resume();
+            // ✅ CRITICAL: Resume consumer on server first, then locally
+            console.log(`▶️ Resuming consumer ${consumer.id} on server...`);
+            try {
+                // Resume on server first
+                socket.emit('consumer-resume', {
+                    consumerId: consumer.id,
+                    roomId: currentRoomId
+                });
+                
+                // Then resume locally
+                await consumer.resume();
+                console.log(`✅ Consumer resumed successfully (both server and client)`);
+            } catch (resumeError) {
+                console.error('❌ Error resuming consumer:', resumeError);
+                // Try to close and cleanup
+                try {
+                    consumer.close();
+                } catch (e) {}
+                throw new Error(`Failed to resume consumer: ${resumeError.message}`);
+            }
 
-            console.log(`✅ Successfully consuming ${kind} from ${socketId} (producer: ${producerId})`);
+            console.log(`✅ Successfully consuming ${kind} from ${socketId} (producer: ${producerId}, consumer: ${consumer.id})`);
             
             // Clear retry count on success
             const retryKey = `${producerId}-${socketId}-${kind}`;
