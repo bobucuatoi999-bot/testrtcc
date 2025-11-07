@@ -78,14 +78,15 @@ class Peer {
 
   /**
    * Create a consumer
+   * NOTE: Producer validation should be done before calling this method.
+   * The router.canConsume() check should also be done before calling this.
    */
   async consume(router, producerId, rtpCapabilities) {
-    const producer = router.getProducerById(producerId);
-    if (!producer) {
-      throw new Error(`Producer ${producerId} not found`);
-    }
+    // ⚠️ IMPORTANT: router.getProducerById() does NOT exist in mediasoup!
+    // Producers are tracked in our Room/Peer objects, not in the router.
+    // The server should validate the producer exists before calling this method.
 
-    // Check if router can consume this producer
+    // Check if router can consume this producer (this only needs producerId, not the producer object)
     if (!router.canConsume({ producerId, rtpCapabilities })) {
       throw new Error('Cannot consume producer - unsupported codec');
     }
@@ -103,6 +104,12 @@ class Peer {
       throw new Error('No recv transport found');
     }
 
+    if (recvTransport.closed) {
+      throw new Error('Recv transport is closed');
+    }
+
+    // Create consumer - this will validate the producer exists on the router's side
+    // (mediasoup internally tracks producers via the router)
     const consumer = await recvTransport.consume({
       producerId,
       rtpCapabilities,

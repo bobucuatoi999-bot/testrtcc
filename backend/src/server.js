@@ -837,33 +837,34 @@ io.on('connection', (socket) => {
       }
 
       // ⭐ CRITICAL: Find and validate the producer exists
+      // ⚠️ IMPORTANT: router.getProducerById() does NOT exist in mediasoup!
+      // We must search through peers to find the producer
+      
       let producerPeer = null;
       let producer = null;
 
-      // Search through all peers to find the producer
-      for (const [peerId, peer] of room.peers.entries()) {
-        // Check if this peer has the producer
-        for (const [pid, p] of peer.producers.entries()) {
-          if (pid === producerId) {
-            producerPeer = peer;
-            producer = p;
-            break;
-          }
+      // First, check room's producer map (this is the primary source of truth)
+      const roomProducerData = room.producers.get(producerId);
+      if (roomProducerData) {
+        // Find the peer that owns this producer
+        producerPeer = room.peers.get(roomProducerData.peerId);
+        if (producerPeer) {
+          // Verify the producer still exists in the peer's producers map
+          producer = producerPeer.producers.get(producerId) || roomProducerData.producer;
         }
-        if (producer) break;
       }
 
-      // Also check room's producer map
+      // If not found in room map, search through all peers
       if (!producer) {
-        const roomProducerData = room.producers.get(producerId);
-        if (roomProducerData) {
-          // Find the peer that owns this producer
-          for (const [peerId, peer] of room.peers.entries()) {
-            if (peer.id === roomProducerData.peerId) {
-              producerPeer = peer;
-              producer = roomProducerData.producer;
-              break;
-            }
+        for (const [peerId, peer] of room.peers.entries()) {
+          // Check if this peer has the producer
+          const peerProducer = peer.producers.get(producerId);
+          if (peerProducer) {
+            producerPeer = peer;
+            producer = peerProducer;
+            // Update room's producer map for consistency
+            room.addProducer(producerId, peerId, producer);
+            break;
           }
         }
       }
@@ -911,15 +912,19 @@ io.on('connection', (socket) => {
       }
 
       // Get router and check if we can consume
+      // ⚠️ NOTE: router.canConsume() only needs producerId, not the producer object
+      // It checks internally if the producer exists on the router
       const router = room.getRouter();
       
       if (!router.canConsume({ producerId, rtpCapabilities })) {
-        console.error(`❌ Cannot consume producer ${producerId} - RTP capabilities mismatch`);
-        socket.emit('consumed', { error: 'Cannot consume - incompatible RTP capabilities', producerId });
+        console.error(`❌ Cannot consume producer ${producerId} - RTP capabilities mismatch or producer not found on router`);
+        socket.emit('consumed', { error: 'Cannot consume - incompatible RTP capabilities or producer not found', producerId });
         return;
       }
 
       // Create consumer
+      // Note: The consumer will be created on the recv transport
+      // Mediasoup will validate the producer exists when creating the consumer
       const consumer = await consumerPeer.consume(router, producerId, rtpCapabilities);
 
       console.log(`✅ Consumer ${consumer.id} created for producer ${producerId}`);

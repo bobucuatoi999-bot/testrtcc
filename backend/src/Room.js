@@ -153,10 +153,42 @@ class Room {
 
   /**
    * Get producer by ID
+   * Returns the producer object if found
    */
   getProducer(producerId) {
     const producerData = this.producers.get(producerId);
     return producerData ? producerData.producer : null;
+  }
+
+  /**
+   * Find producer by ID and return both producer and peer
+   * This is the correct way to find a producer in mediasoup
+   */
+  findProducer(producerId) {
+    // First check room's producer map
+    const producerData = this.producers.get(producerId);
+    if (producerData) {
+      const peer = this.peers.get(producerData.peerId);
+      if (peer) {
+        // Verify producer still exists in peer's map
+        const producer = peer.producers.get(producerId);
+        if (producer) {
+          return { producer, peer };
+        }
+      }
+    }
+
+    // If not found, search through all peers
+    for (const [peerId, peer] of this.peers.entries()) {
+      const producer = peer.producers.get(producerId);
+      if (producer) {
+        // Update room's producer map for consistency
+        this.addProducer(producerId, peerId, producer);
+        return { producer, peer };
+      }
+    }
+
+    return null;
   }
 
   /**
