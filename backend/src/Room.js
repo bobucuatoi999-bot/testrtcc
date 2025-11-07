@@ -193,17 +193,22 @@ class Room {
 
   /**
    * Get all producers in room
+   * Returns producers with socketId for frontend compatibility
    */
   getAllProducers() {
     const producers = [];
     for (const [producerId, producerData] of this.producers) {
       const peer = this.peers.get(producerData.peerId);
-      producers.push({
-        producerId,
-        peerId: producerData.peerId,
-        kind: producerData.producer.kind,
-        metadata: peer ? peer.metadata : {}
-      });
+      if (peer && peer.socket) {
+        producers.push({
+          producerId,
+          socketId: peer.socket.id, // Frontend expects socketId
+          peerId: producerData.peerId, // Keep for internal tracking
+          kind: producerData.producer.kind,
+          userName: peer.metadata.name || 'User',
+          metadata: peer.metadata
+        });
+      }
     }
     return producers;
   }
