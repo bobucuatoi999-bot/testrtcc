@@ -1064,49 +1064,22 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
         });
         
         try {
-            const data = await consumedPromise;
-            
             // ✅ CRITICAL: Validate consumer parameters before creating consumer
-            if (!data || !data.id || !data.producerId || !data.kind || !data.rtpParameters) {
+            if (!consumerParams || !consumerParams.id || !consumerParams.producerId || !consumerParams.kind || !consumerParams.rtpParameters) {
                 throw new Error('Invalid consumer parameters from server');
             }
             
-            if (!data.rtpParameters.codecs || !Array.isArray(data.rtpParameters.codecs) || data.rtpParameters.codecs.length === 0) {
+            if (!consumerParams.rtpParameters.codecs || !Array.isArray(consumerParams.rtpParameters.codecs) || consumerParams.rtpParameters.codecs.length === 0) {
                 throw new Error('Invalid RTP parameters: missing or empty codecs');
             }
             
-            console.log(`📦 Received consumer params for ${kind}:`, {
-                id: data.id,
-                producerId: data.producerId,
-                kind: data.kind,
-                codecs: data.rtpParameters.codecs.map(c => c.mimeType).join(', ')
-            });
-            console.log(`📺 CONSUMER LIFECYCLE: received, producerId=${data.producerId}, consumerId=${data.id}, timestamp=${Date.now()}`);
+            console.log(`📺 CONSUMER LIFECYCLE: received, producerId=${consumerParams.producerId}, consumerId=${consumerParams.id}, timestamp=${Date.now()}`);
             
-            // ✅ CRITICAL: Verify transport is not closed before consuming
-            if (recvTransport.closed) {
-                throw new Error('Transport is closed');
-            }
+            // ⭐ Now consume on transport - this SHOULD trigger 'connect' event
+            console.log(`🎬 Calling recvTransport.consume()...`);
+            console.log(`🔍 Before consume - connection state: ${recvTransport.connectionState}`);
             
-            // ✅ CRITICAL: Double-check handler is still attached before calling consume()
-            const handlerStillAttached = recvTransport.listenerCount && recvTransport.listenerCount('connect') > 0;
-            console.log(`🔍 Verify handler still attached before consume: ${handlerStillAttached}`);
-            
-            if (!handlerStillAttached) {
-                throw new Error('Transport connect handler was removed! Cannot consume.');
-            }
-            
-            // ✅ CRITICAL INSIGHT: The transport 'connect' event is automatically triggered
-            // by mediasoup when we call recvTransport.consume() for the FIRST time
-            // (if the transport is not already connected)
-            // The connect handler we set up earlier will handle server communication
-            console.log(`🔧 Creating consumer for ${kind} producer ${data.producerId}...`);
-            console.log(`🔍 Transport state before consume: ${recvTransport.connectionState}`);
-            console.log(`🔍 Transport ID: ${recvTransport.id}`);
-            console.log(`🔍 NOTE: If transport state is 'new', the connect event should fire during consume()`);
-            console.log(`🔍 About to call recvTransport.consume() - this should trigger connect event`);
-            
-            // ✅ CRITICAL: Set up a one-time listener to verify connect event fires
+            // Set up a one-time listener to verify connect event fires
             let connectEventFired = false;
             const verifyConnectHandler = () => {
                 connectEventFired = true;
@@ -1118,14 +1091,14 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
             let consumer;
             try {
                 consumer = await recvTransport.consume({
-                    id: data.id,
-                    producerId: data.producerId,
-                    kind: data.kind,
-                    rtpParameters: data.rtpParameters
+                    id: consumerParams.id,
+                    producerId: consumerParams.producerId,
+                    kind: consumerParams.kind,
+                    rtpParameters: consumerParams.rtpParameters
                 });
                 
                 console.log(`✅ Consumer created successfully: ${consumer.id}`);
-                console.log(`🔍 Transport state after consume: ${recvTransport.connectionState}`);
+                console.log(`🔍 After consume - connection state: ${recvTransport.connectionState}`);
                 console.log(`🔍 Connect event fired: ${connectEventFired}`);
                 
                 // Remove the verification handler
