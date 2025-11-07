@@ -1,0 +1,4 @@
+# Railway ignore file - prevent Railway from auto-detecting Dockerfiles
+backend/Dockerfile
+frontend/Dockerfile
+
