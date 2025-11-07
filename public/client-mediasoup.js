@@ -684,26 +684,43 @@ async function startProducingLocalMedia() {
 /**
  * Consume a remote producer (start receiving media from another user)
  */
-async function consumeProducer(producerId, socketId, kind, remoteUserName) {
+// Track retry attempts to prevent infinite loops
+const consumeRetryAttempts = new Map(); // Map: `${producerId}-${socketId}-${kind}` -> count
+const MAX_CONSUME_RETRIES = 3;
+
+async function consumeProducer(producerId, socketId, kind, remoteUserName, retryCount = 0) {
     try {
+        const retryKey = `${producerId}-${socketId}-${kind}`;
+        
+        // Check if we've exceeded max retries
+        if (retryCount >= MAX_CONSUME_RETRIES) {
+            console.error(`❌ Max retries (${MAX_CONSUME_RETRIES}) reached for ${kind} producer ${producerId} from ${socketId}`);
+            consumeRetryAttempts.delete(retryKey);
+            return;
+        }
+        
         if (!recvTransport || !device) {
             console.warn('⚠️ Transports not ready, will retry later');
-            // Retry after transports are ready
-            setTimeout(() => {
-                if (recvTransport && device) {
-                    consumeProducer(producerId, socketId, kind, remoteUserName);
-                }
-            }, 1000);
+            // Retry after transports are ready (but limit retries)
+            if (retryCount < MAX_CONSUME_RETRIES) {
+                setTimeout(() => {
+                    if (recvTransport && device) {
+                        consumeProducer(producerId, socketId, kind, remoteUserName, retryCount + 1);
+                    }
+                }, 1000);
+            }
             return;
         }
         
         if (!device.loaded) {
             console.warn('⚠️ Device not loaded, will retry later');
-            setTimeout(() => {
-                if (device && device.loaded) {
-                    consumeProducer(producerId, socketId, kind, remoteUserName);
-                }
-            }, 1000);
+            if (retryCount < MAX_CONSUME_RETRIES) {
+                setTimeout(() => {
+                    if (device && device.loaded) {
+                        consumeProducer(producerId, socketId, kind, remoteUserName, retryCount + 1);
+                    }
+                }, 1000);
+            }
             return;
         }
 
@@ -748,8 +765,12 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
                 rtpParameters: data.rtpParameters
             });
             
+            // ✅ CRITICAL FIX: Use addEventListener for MediaStreamTrack (not .on())
+            // MediaStreamTrack is a native browser Web API, not a mediasoup object
+            const track = consumer.track;
+            
             // Handle consumer track ended
-            consumer.track.on('ended', () => {
+            track.addEventListener('ended', () => {
                 console.log(`⚠️ Track ended for ${kind} from ${socketId}`);
                 if (kind === 'video') {
                     const remoteUser = remoteConsumers.get(socketId);
@@ -763,16 +784,16 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
                         }
                     }
                 }
-            });
+            }, { once: false });
             
             // Handle consumer track muted/unmuted
-            consumer.track.on('mute', () => {
+            track.addEventListener('mute', () => {
                 console.log(`🔇 Track muted for ${kind} from ${socketId}`);
-            });
+            }, { once: false });
             
-            consumer.track.on('unmute', () => {
+            track.addEventListener('unmute', () => {
                 console.log(`🔊 Track unmuted for ${kind} from ${socketId}`);
-            });
+            }, { once: false });
 
             // Get or create remote user data
             if (!remoteConsumers.has(socketId)) {
@@ -852,7 +873,13 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
             // Resume consumer (start receiving)
             await consumer.resume();
 
-            console.log(`✅ Consuming ${kind} from ${socketId}`);
+            console.log(`✅ Successfully consuming ${kind} from ${socketId} (producer: ${producerId})`);
+            
+            // Clear retry count on success
+            const retryKey = `${producerId}-${socketId}-${kind}`;
+            if (consumeRetryAttempts.has(retryKey)) {
+                consumeRetryAttempts.delete(retryKey);
+            }
 
         } catch (error) {
             console.error(`❌ Error consuming producer ${producerId}:`, error);
@@ -1241,9 +1268,10 @@ async function toggleScreenShare() {
                 }
 
                 // Handle screen share ending (user clicks stop in browser)
-                screenTrack.onended = () => {
+                // ✅ Use addEventListener for MediaStreamTrack
+                screenTrack.addEventListener('ended', () => {
                     toggleScreenShare();
-                };
+                }, { once: true });
 
                 isSharingScreen = true;
                 updateScreenShareButton();
