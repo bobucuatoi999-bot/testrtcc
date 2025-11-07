@@ -454,93 +454,182 @@ function setupSocketHandlers() {
     // Handle receive transport created
     socket.on('recv-transport-created', async (data) => {
         try {
-            if (!device) {
-                throw new Error('Device not initialized');
-            }
-
-            // Ensure device is loaded before creating transport
-            if (!device.loaded) {
-                throw new Error('Device not loaded yet');
-            }
-
-            // Extract ICE servers array from the server response
-            let iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
-            
-            // Validate and clean ICE servers format (same as send transport)
-            iceServersArray = iceServersArray.filter(server => {
-                if (server.urls) {
-                    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
-                    const hasInvalidTransport = urls.some(url => {
-                        if (typeof url === 'string') {
-                            return url.includes('transport=tls') || url.includes('transport=TLS');
-                        }
-                        return false;
-                    });
-                    return !hasInvalidTransport;
-                }
-                return true;
-            });
-            
-            console.log('📡 Creating recv transport with ICE servers:', iceServersArray.length, 'servers');
-
-            // Create receive transport
-            recvTransport = device.createRecvTransport({
-                id: data.id,
-                iceParameters: data.iceParameters,
-                iceCandidates: data.iceCandidates,
-                dtlsParameters: data.dtlsParameters,
-                iceServers: iceServersArray,
-                iceTransportPolicy: 'all'
-            });
-
-            // Handle transport connect event - set up immediately after creation
-            recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
-                console.log('🔌 Receive transport connecting...');
-                
-                socket.emit('connect-transport', {
-                    transportId: recvTransport.id,
-                    dtlsParameters: dtlsParameters,
-                    roomId: currentRoomId
-                }, (response) => {
-                    if (response && response.error) {
-                        console.error('❌ Transport connect error:', response.error);
-                        errback(new Error(response.error));
-                    } else {
-                        console.log('✅ Transport connected');
-                        callback();
-                    }
-                });
-            });
-
-            recvTransport.on('connectionstatechange', (state) => {
-                console.log('📥 Receive transport state:', state);
-                if (state === 'failed' || state === 'disconnected') {
-                    showStatus('Network issue. Reconnecting...', 'error');
-                    setTimeout(() => {
-                        if (recvTransport && !recvTransport.closed) {
-                            recvTransport.restartIce();
-                        }
-                    }, 2000);
-                }
-            });
-
-            console.log('✅ Receive transport created');
-
-            // After both transports are ready, start producing local media
-            if (sendTransport && recvTransport) {
-                // Get existing producers in room (users already in the room)
-                console.log('📋 Requesting existing producers in room...');
-                socket.emit('get-producers', { roomId: currentRoomId });
-                
-                // Start producing local media
-                await startProducingLocalMedia();
-            }
-
+            await createRecvTransportFromData(data);
         } catch (error) {
             console.error('❌ Error handling recv transport:', error);
             showStatus('Failed to create receive transport', 'error');
         }
     });
+});
+
+// ============================================
+// Transport Creation Functions
+// ============================================
+
+/**
+ * Create receive transport with handlers attached IMMEDIATELY
+ * This is the CRITICAL function - handlers MUST be attached right after creation
+ */
+async function createRecvTransportFromData(data) {
+    console.log('📥 Creating receive transport...');
+    
+    try {
+        if (!device) {
+            throw new Error('Device not initialized');
+        }
+
+        // Ensure device is loaded before creating transport
+        if (!device.loaded) {
+            throw new Error('Device not loaded yet');
+        }
+
+        // Extract ICE servers array from the server response
+        let iceServersArray = iceServers && iceServers.iceServers ? iceServers.iceServers : [];
+        
+        // Validate and clean ICE servers format
+        iceServersArray = iceServersArray.filter(server => {
+            if (server.urls) {
+                const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+                const hasInvalidTransport = urls.some(url => {
+                    if (typeof url === 'string') {
+                        return url.includes('transport=tls') || url.includes('transport=TLS');
+                    }
+                    return false;
+                });
+                return !hasInvalidTransport;
+            }
+            return true;
+        });
+        
+        console.log('📡 Creating recv transport with ICE servers:', iceServersArray.length, 'servers');
+
+        // Create receive transport
+        recvTransport = device.createRecvTransport({
+            id: data.id,
+            iceParameters: data.iceParameters,
+            iceCandidates: data.iceCandidates,
+            dtlsParameters: data.dtlsParameters,
+            iceServers: iceServersArray,
+            iceTransportPolicy: 'all'
+        });
+
+        console.log(`✅ Recv transport created: ${recvTransport.id}`);
+
+        // ⭐ CRITICAL: Attach event handlers IMMEDIATELY after creation
+        // This MUST happen before any consume() calls
+
+        // 1. Connect event - MOST IMPORTANT
+        recvTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+            console.log('🔗 Recv transport connect event fired!');
+            console.log('🔍 DTLS Parameters:', dtlsParameters.fingerprints?.[0]?.value?.substring(0, 20) + '...');
+
+            try {
+                // Tell server to connect the transport
+                await new Promise((resolve, reject) => {
+                    socket.emit('connect-transport', {
+                        roomId: currentRoomId,
+                        transportId: recvTransport.id,
+                        dtlsParameters: dtlsParameters
+                    }, (response) => {
+                        if (response && response.error) {
+                            reject(new Error(response.error));
+                        } else {
+                            resolve();
+                        }
+                    });
+                });
+
+                console.log('✅ Recv transport connected on server');
+                callback(); // Tell mediasoup-client connection succeeded
+
+            } catch (error) {
+                console.error('❌ Failed to connect recv transport:', error);
+                errback(error); // Tell mediasoup-client connection failed
+            }
+        });
+
+        // 2. Connection state change
+        recvTransport.on('connectionstatechange', (state) => {
+            console.log(`📡 Recv transport connection state: ${state}`);
+            
+            if (state === 'failed' || state === 'closed') {
+                console.error('❌ Recv transport connection failed/closed');
+                showStatus('Network issue. Reconnecting...', 'error');
+                // Attempt to recreate transport
+                setTimeout(() => {
+                    if (recvTransport && recvTransport.closed) {
+                        console.log('🔄 Recreating recv transport...');
+                        socket.emit('create-recv-transport', { roomId: currentRoomId });
+                    } else if (recvTransport) {
+                        recvTransport.restartIce();
+                    }
+                }, 2000);
+            }
+        });
+
+        // 3. ICE state change
+        recvTransport.on('icestatechange', (iceState) => {
+            console.log(`🧊 Recv transport ICE state: ${iceState}`);
+        });
+
+        // 4. ICE gathering state
+        recvTransport.on('icegatheringstatechange', (iceGatheringState) => {
+            console.log(`📡 Recv transport ICE gathering state: ${iceGatheringState}`);
+        });
+
+        console.log('✅ All recv transport handlers attached');
+        console.log('🔍 Transport state:', recvTransport.connectionState);
+        console.log('🔍 Transport closed:', recvTransport.closed);
+        console.log('🔍 Connect listeners:', recvTransport.listenerCount('connect'));
+
+        // ⭐ VERIFY: Check that handlers are attached
+        debugTransport(recvTransport, 'Recv');
+
+        // After both transports are ready, start producing local media
+        if (sendTransport && recvTransport) {
+            // Get existing producers in room (users already in the room)
+            console.log('📋 Requesting existing producers in room...');
+            socket.emit('get-producers', { roomId: currentRoomId });
+            
+            // Start producing local media
+            await startProducingLocalMedia();
+        }
+
+        return recvTransport;
+
+    } catch (error) {
+        console.error('❌ Error creating recv transport:', error);
+        throw error;
+    }
+}
+
+/**
+ * Debug function to verify transport setup
+ */
+function debugTransport(transport, name) {
+    if (!transport) {
+        console.error(`❌ DEBUG: ${name} Transport is null`);
+        return false;
+    }
+
+    console.log(`🔍 DEBUG: ${name} Transport`);
+    console.log(`   ID: ${transport.id}`);
+    console.log(`   Closed: ${transport.closed}`);
+    console.log(`   Connection State: ${transport.connectionState}`);
+    console.log(`   Event listeners:`);
+    console.log(`      - connect: ${transport.listenerCount('connect')}`);
+    console.log(`      - connectionstatechange: ${transport.listenerCount('connectionstatechange')}`);
+    console.log(`      - icestatechange: ${transport.listenerCount('icestatechange')}`);
+    
+    // Check if handler is properly attached
+    if (transport.listenerCount('connect') === 0) {
+        console.error('❌ WARNING: No connect handler attached!');
+        console.error('❌ This will cause consume() to hang forever');
+        return false;
+    }
+    
+    return true;
+}
 
     // Handle chat messages
     socket.on('chat-message', (messageData) => {
