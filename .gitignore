@@ -1,6 +1,8 @@
 # Dependencies
 node_modules/
+# Allow server/package-lock.json for Railway CI builds (npm ci requires it)
 package-lock.json
+!server/package-lock.json
 yarn.lock
 
 # Environment variables
