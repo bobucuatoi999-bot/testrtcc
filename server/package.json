@@ -1,0 +1,36 @@
+{
+  "name": "webrtc-server",
+  "version": "1.0.0",
+  "description": "WebRTC signaling server for 4-user video conferencing",
+  "main": "src/server.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "webrtc",
+    "video-conferencing",
+    "socket.io"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.6.1",
+    "cors": "^2.8.5",
+    "bcrypt": "^5.1.1",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.0",
+    "@types/bcrypt": "^5.0.2",
+    "@types/cors": "^2.8.17",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}
+
