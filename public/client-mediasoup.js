@@ -894,18 +894,20 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
                 codecs: data.rtpParameters.codecs.map(c => c.mimeType).join(', ')
             });
             
-            // ✅ CRITICAL: The transport connect event is triggered when consume() is called
-            // So we don't check connection state here - it will connect during consume()
-            // However, we verify transport is not closed
+            // ✅ CRITICAL: Verify transport is not closed before consuming
             if (recvTransport.closed) {
                 throw new Error('Transport is closed');
             }
             
-            // Create consumer with validated parameters
-            // NOTE: This will trigger the transport 'connect' event if transport is not yet connected
+            // ✅ CRITICAL INSIGHT: The transport 'connect' event is automatically triggered
+            // by mediasoup when we call recvTransport.consume() for the FIRST time
+            // (if the transport is not already connected)
+            // The connect handler we set up earlier will handle server communication
             console.log(`🔧 Creating consumer for ${kind} producer ${data.producerId}...`);
             console.log(`🔍 Transport state before consume: ${recvTransport.connectionState}`);
+            console.log(`🔍 NOTE: If transport state is 'new', the connect event will fire during consume()`);
             
+            // Create consumer - this will trigger the transport connect event if needed
             const consumer = await recvTransport.consume({
                 id: data.id,
                 producerId: data.producerId,
@@ -916,17 +918,25 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
             console.log(`✅ Consumer created successfully: ${consumer.id}`);
             console.log(`🔍 Transport state after consume: ${recvTransport.connectionState}`);
             
-            // Now wait for transport to connect if it's not already connected
-            // (The connect event handler should have been triggered by consume())
-            if (recvTransport.connectionState !== 'connected' && recvTransport.connectionState !== 'connecting') {
-                console.log(`⏳ Waiting for transport to connect after consumer creation (state: ${recvTransport.connectionState})...`);
+            // ✅ CRITICAL: Now wait for transport to connect
+            // The connect event should have fired during consume(), so we wait for it to complete
+            if (recvTransport.connectionState !== 'connected') {
+                console.log(`⏳ Waiting for transport to connect (current state: ${recvTransport.connectionState})...`);
                 try {
                     await waitForTransportConnection(recvTransport, 15000);
-                    console.log('✅ Transport connected after consumer creation');
+                    console.log('✅ Transport connected successfully after consumer creation');
                 } catch (connectError) {
-                    console.error('❌ Transport failed to connect after consumer creation:', connectError);
-                    // Don't throw here - consumer might still work if connection succeeds later
+                    console.error('❌ Transport failed to connect:', connectError);
+                    // Close the consumer if transport failed
+                    try {
+                        consumer.close();
+                    } catch (e) {
+                        console.error('Error closing consumer:', e);
+                    }
+                    throw new Error(`Transport connection failed: ${connectError.message}`);
                 }
+            } else {
+                console.log('✅ Transport already connected');
             }
             
             // ✅ CRITICAL FIX: Use addEventListener for MediaStreamTrack (not .on())
