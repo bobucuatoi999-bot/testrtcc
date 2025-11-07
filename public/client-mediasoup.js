@@ -486,11 +486,23 @@ function setupSocketHandlers() {
                 console.log(`🧊 [ICE STATE] Receive transport: ${state}`);
             });
             
+            // ✅ CRITICAL: Verify handlers are attached
+            const hasConnectHandler = recvTransport.listenerCount && recvTransport.listenerCount('connect') > 0;
+            const hasStateChangeHandler = recvTransport.listenerCount && recvTransport.listenerCount('connectionstatechange') > 0;
+            
             console.log('✅ Receive transport event handlers attached');
+            console.log('🔍 Connect handler attached:', hasConnectHandler);
+            console.log('🔍 State change handler attached:', hasStateChangeHandler);
             console.log('📥 Transport ready for consumption');
             console.log('📥 Initial connection state:', recvTransport.connectionState);
-
-            console.log('✅ Receive transport created');
+            
+            // Set a flag to track that transport is ready
+            if (!window.mediasoupTransportsReady) {
+                window.mediasoupTransportsReady = {};
+            }
+            window.mediasoupTransportsReady.recvTransport = true;
+            
+            console.log('✅ Receive transport created and ready');
 
             // After both transports are ready, start producing local media
             if (sendTransport && recvTransport) {
@@ -934,24 +946,47 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
                 throw new Error('Transport is closed');
             }
             
+            // ✅ CRITICAL: Double-check handler is still attached before calling consume()
+            const handlerStillAttached = recvTransport.listenerCount && recvTransport.listenerCount('connect') > 0;
+            console.log(`🔍 Verify handler still attached before consume: ${handlerStillAttached}`);
+            
+            if (!handlerStillAttached) {
+                throw new Error('Transport connect handler was removed! Cannot consume.');
+            }
+            
             // ✅ CRITICAL INSIGHT: The transport 'connect' event is automatically triggered
             // by mediasoup when we call recvTransport.consume() for the FIRST time
             // (if the transport is not already connected)
             // The connect handler we set up earlier will handle server communication
             console.log(`🔧 Creating consumer for ${kind} producer ${data.producerId}...`);
             console.log(`🔍 Transport state before consume: ${recvTransport.connectionState}`);
-            console.log(`🔍 NOTE: If transport state is 'new', the connect event will fire during consume()`);
+            console.log(`🔍 Transport ID: ${recvTransport.id}`);
+            console.log(`🔍 NOTE: If transport state is 'new', the connect event should fire during consume()`);
+            console.log(`🔍 About to call recvTransport.consume() - this should trigger connect event`);
+            
+            // ✅ CRITICAL: Set up a one-time listener to verify connect event fires
+            let connectEventFired = false;
+            const verifyConnectHandler = () => {
+                connectEventFired = true;
+                console.log('✅ [VERIFIED] Connect event fired during consume()');
+            };
+            recvTransport.once('connect', verifyConnectHandler);
             
             // Create consumer - this will trigger the transport connect event if needed
-            const consumer = await recvTransport.consume({
-                id: data.id,
-                producerId: data.producerId,
-                kind: data.kind,
-                rtpParameters: data.rtpParameters
-            });
-            
-            console.log(`✅ Consumer created successfully: ${consumer.id}`);
-            console.log(`🔍 Transport state after consume: ${recvTransport.connectionState}`);
+            try {
+                const consumer = await recvTransport.consume({
+                    id: data.id,
+                    producerId: data.producerId,
+                    kind: data.kind,
+                    rtpParameters: data.rtpParameters
+                });
+                
+                console.log(`✅ Consumer created successfully: ${consumer.id}`);
+                console.log(`🔍 Transport state after consume: ${recvTransport.connectionState}`);
+                console.log(`🔍 Connect event fired: ${connectEventFired}`);
+                
+                // Remove the verification handler
+                recvTransport.off('connect', verifyConnectHandler);
             
             // ✅ CRITICAL: Now wait for transport to connect
             // The connect event should have fired during consume(), so we wait for it to complete
