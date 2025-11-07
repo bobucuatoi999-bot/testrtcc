@@ -511,13 +511,13 @@
       }
     }
     
-    // Initialize PeerJS with our peerId
-    function initPeerJS(myPeerId) {
+    // Initialize PeerJS (let PeerJS generate peerId automatically)
+    function initPeerJS() {
       return new Promise((resolve, reject) => {
-        console.log('🔌 Initializing PeerJS with peerId:', myPeerId);
+        console.log('🔌 Initializing PeerJS...');
         
-        // PeerJS configuration
-        peer = new Peer(myPeerId, {
+        // PeerJS configuration - let PeerJS generate peerId automatically
+        peer = new Peer({
           host: '0.peerjs.com', // Free PeerJS server
           port: 443,
           path: '/',
@@ -532,12 +532,19 @@
         
         peer.on('open', (id) => {
           console.log('✅ PeerJS connected, peerId:', id);
+          peerId = id; // Store the generated peerId
           resolve(peer);
         });
         
         peer.on('error', (error) => {
           console.error('❌ PeerJS error:', error);
-          reject(error);
+          // Some errors are non-fatal (like peer ID taken)
+          if (error.type === 'peer-unavailable') {
+            console.warn('⚠️ Peer unavailable, will retry');
+            // Don't reject, just log
+          } else {
+            reject(error);
+          }
         });
         
         // Handle incoming calls
@@ -606,14 +613,13 @@
         btn.textContent = 'Getting camera...';
         await getLocalMedia();
         
-        // Initialize PeerJS
+        // Initialize PeerJS (generates peerId automatically)
         btn.textContent = 'Connecting...';
-        const tempPeerId = generatePeerId();
-        await initPeerJS(tempPeerId);
+        await initPeerJS();
         
-        // Create room
+        // Create room (send peerId to server)
         btn.textContent = 'Creating...';
-        socket.emit('create-room', { displayName: name }, (response) => {
+        socket.emit('create-room', { displayName: name, peerId: peerId }, (response) => {
           if (response.error) {
             showError(response.error);
             btn.disabled = false;
@@ -675,14 +681,13 @@
         btn.textContent = 'Getting camera...';
         await getLocalMedia();
         
-        // Initialize PeerJS
+        // Initialize PeerJS (generates peerId automatically)
         btn.textContent = 'Connecting...';
-        const tempPeerId = generatePeerId();
-        await initPeerJS(tempPeerId);
+        await initPeerJS();
         
-        // Join room
+        // Join room (send peerId to server)
         btn.textContent = 'Joining...';
-        socket.emit('join-room', { roomId: room, displayName: name }, (response) => {
+        socket.emit('join-room', { roomId: room, displayName: name, peerId: peerId }, (response) => {
           if (response.error) {
             showError(response.error);
             btn.disabled = false;
@@ -1089,10 +1094,7 @@
       document.getElementById('error').style.display = 'none';
     }
     
-    // Generate PeerJS peer ID
-    function generatePeerId() {
-      return 'peer-' + Math.random().toString(36).substring(2, 15);
-    }
+    // PeerJS will generate peerId automatically
     
     // Initialize on page load
     window.addEventListener('DOMContentLoaded', () => {

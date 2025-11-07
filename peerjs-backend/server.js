@@ -69,10 +69,11 @@ io.on('connection', (socket) => {
   console.log('✅ Client connected:', socket.id);
 
   // Create or join room
-  socket.on('create-room', ({ displayName, password }, callback) => {
+  socket.on('create-room', ({ displayName, password, peerId: clientPeerId }, callback) => {
     try {
       const userId = generateId(12);
-      const peerId = generateId(12); // PeerJS peer ID
+      // Use client's PeerJS peerId if provided, otherwise generate one
+      const peerId = clientPeerId || generateId(12);
       const roomId = generateId(8).toLowerCase();
 
       if (!rooms.has(roomId)) {
@@ -124,7 +125,7 @@ io.on('connection', (socket) => {
   });
 
   // Join existing room
-  socket.on('join-room', ({ roomId, displayName, password }, callback) => {
+  socket.on('join-room', ({ roomId, displayName, password, peerId: clientPeerId }, callback) => {
     try {
       const normalizedRoomId = roomId.trim().toLowerCase();
 
@@ -141,7 +142,8 @@ io.on('connection', (socket) => {
       }
 
       const userId = generateId(12);
-      const peerId = generateId(12); // PeerJS peer ID
+      // Use client's PeerJS peerId if provided, otherwise generate one
+      const peerId = clientPeerId || generateId(12);
 
       room.set(userId, {
         userId,
