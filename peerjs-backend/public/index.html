@@ -542,14 +542,15 @@
         
         // Handle incoming calls
         peer.on('call', (call) => {
-          console.log('📞 Received call from:', call.peer);
+          console.log(`📞 Received incoming call from ${call.peer}`);
           
           // Answer with local stream
           if (localStream) {
+            console.log(`✅ Answering call from ${call.peer} with local stream`);
             call.answer(localStream);
           } else {
-            console.warn('⚠️ No local stream to answer call');
-            // Try to get media
+            console.warn('⚠️ No local stream to answer call, getting media...');
+            // Try to get media (shouldn't happen as we get media first)
             getLocalMedia().then(stream => {
               call.answer(stream);
             }).catch(err => {
@@ -559,20 +560,23 @@
           
           // Handle remote stream
           call.on('stream', (remoteStream) => {
-            console.log('📥 Received remote stream from:', call.peer);
+            console.log(`📥 Received remote stream from ${call.peer}:`, {
+              videoTracks: remoteStream.getVideoTracks().length,
+              audioTracks: remoteStream.getAudioTracks().length,
+            });
             remoteStreams.set(call.peer, remoteStream);
             updateVideoGrid();
           });
           
           call.on('close', () => {
-            console.log('📴 Call closed with:', call.peer);
+            console.log(`📴 Incoming call closed with ${call.peer}`);
             calls.delete(call.peer);
             remoteStreams.delete(call.peer);
             updateVideoGrid();
           });
           
           call.on('error', (error) => {
-            console.error('❌ Call error:', error);
+            console.error(`❌ Incoming call error from ${call.peer}:`, error);
           });
           
           calls.set(call.peer, call);
@@ -630,10 +634,8 @@
           
           enterRoom();
           
-          // Call existing users
-          response.users.forEach(user => {
-            callUser(user.peerId, user.userId);
-          });
+          // No existing users for new room
+          // Wait for others to join
         });
       } catch (error) {
         console.error('❌ Error creating room:', error);
@@ -706,9 +708,13 @@
           
           enterRoom();
           
-          // Call ALL existing users
-          response.users.forEach(user => {
-            callUser(user.peerId, user.userId);
+          // CRITICAL: New joiner calls ALL existing users
+          // This ensures bidirectional connections
+          console.log(`📞 Calling ${response.users.length} existing users...`);
+          response.users.forEach((user, index) => {
+            setTimeout(() => {
+              callUser(user.peerId, user.userId);
+            }, index * 300); // Stagger calls slightly
           });
         });
       } catch (error) {
@@ -727,8 +733,15 @@
       }
       
       if (calls.has(targetPeerId)) {
-        console.log('⚠️ Call already exists to:', targetPeerId);
-        return;
+        console.log(`⚠️ Call already exists to ${targetPeerId}, checking connection...`);
+        const existingCall = calls.get(targetPeerId);
+        // Check if call is still active
+        if (existingCall.open) {
+          return; // Call is active
+        } else {
+          // Call is closed, remove it
+          calls.delete(targetPeerId);
+        }
       }
       
       console.log(`📞 Calling ${targetPeerId}...`);
@@ -738,30 +751,57 @@
         
         if (!call) {
           console.error('❌ Failed to create call to:', targetPeerId);
+          // Retry after a short delay
+          setTimeout(() => {
+            if (!calls.has(targetPeerId)) {
+              console.log(`🔄 Retrying call to ${targetPeerId}...`);
+              callUser(targetPeerId, targetUserId);
+            }
+          }, 2000);
           return;
         }
         
+        console.log(`✅ Call created to ${targetPeerId}`);
+        
         // Handle remote stream
         call.on('stream', (remoteStream) => {
-          console.log('📥 Received remote stream from:', targetPeerId);
+          console.log(`📥 Received remote stream from ${targetPeerId}:`, {
+            videoTracks: remoteStream.getVideoTracks().length,
+            audioTracks: remoteStream.getAudioTracks().length,
+          });
           remoteStreams.set(targetPeerId, remoteStream);
           updateVideoGrid();
         });
         
         call.on('close', () => {
-          console.log('📴 Call closed with:', targetPeerId);
+          console.log(`📴 Call closed with ${targetPeerId}`);
           calls.delete(targetPeerId);
           remoteStreams.delete(targetPeerId);
           updateVideoGrid();
         });
         
         call.on('error', (error) => {
-          console.error('❌ Call error with', targetPeerId, ':', error);
+          console.error(`❌ Call error with ${targetPeerId}:`, error);
+          // Try to reconnect on error
+          calls.delete(targetPeerId);
+          setTimeout(() => {
+            if (!calls.has(targetPeerId)) {
+              console.log(`🔄 Retrying call to ${targetPeerId} after error...`);
+              callUser(targetPeerId, targetUserId);
+            }
+          }, 3000);
         });
         
         calls.set(targetPeerId, call);
       } catch (error) {
-        console.error('❌ Error calling user:', error);
+        console.error(`❌ Error calling user ${targetPeerId}:`, error);
+        // Retry on error
+        setTimeout(() => {
+          if (!calls.has(targetPeerId)) {
+            console.log(`🔄 Retrying call to ${targetPeerId} after exception...`);
+            callUser(targetPeerId, targetUserId);
+          }
+        }, 2000);
       }
     }
     
@@ -777,11 +817,12 @@
       updateRoomInfo();
       updateVideoGrid();
       
-      // New user will call us, but we can also call them
-      // PeerJS handles this automatically
+      // CRITICAL: Existing users call the new user
+      // New user will also call us, but PeerJS handles duplicate calls gracefully
+      console.log(`📞 Calling new user ${data.displayName} (${data.peerId})...`);
       setTimeout(() => {
         callUser(data.peerId, data.userId);
-      }, 1000); // Small delay to ensure their PeerJS is ready
+      }, 500); // Small delay to ensure their PeerJS is ready
     }
     
     // Handle user left
