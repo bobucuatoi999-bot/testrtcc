@@ -29,6 +29,35 @@ app.use(cors({
 // Body parsing
 app.use(express.json());
 
+// Serve static files from public directory (frontend)
+// Check if public directory exists (could be in parent directory if backend is in subdirectory)
+const publicPath = path.join(__dirname, '../../public');
+const publicPathAlt = path.join(__dirname, '../public');
+
+if (fs.existsSync(publicPath)) {
+  app.use(express.static(publicPath));
+  console.log(`📁 Serving static files from: ${publicPath}`);
+} else if (fs.existsSync(publicPathAlt)) {
+  app.use(express.static(publicPathAlt));
+  console.log(`📁 Serving static files from: ${publicPathAlt}`);
+} else {
+  console.warn('⚠️  Public directory not found. Frontend files may not be served.');
+}
+
+// Serve index.html for root route
+app.get('/', (req, res) => {
+  const indexPath = path.join(publicPath, 'index.html');
+  const indexPathAlt = path.join(publicPathAlt, 'index.html');
+  
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else if (fs.existsSync(indexPathAlt)) {
+    res.sendFile(indexPathAlt);
+  } else {
+    res.json({ message: 'Backend API is running. Frontend files not found.' });
+  }
+});
+
 // Room management (must be defined before routes)
 const roomsMap = new Map(); // roomId -> Room
 const peersMap = new Map(); // socketId -> Peer
