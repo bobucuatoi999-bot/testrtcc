@@ -113,8 +113,18 @@ async function createRoom() {
     return;
   }
   
-  btn.disabled = true;
-  btn.textContent = 'Creating...';
+  // CRITICAL FIX: Get local media BEFORE joining room
+  try {
+    btn.disabled = true;
+    btn.textContent = 'Getting camera...';
+    
+    await initLocalMedia(); // Get media first!
+    
+    btn.textContent = 'Creating...';
+  } catch (error) {
+    console.warn('⚠️ Could not get media, continuing without it:', error);
+    // Continue without media
+  }
   
   socket.emit('create-room', {
     displayName: name,
@@ -147,8 +157,18 @@ async function joinRoom() {
     return;
   }
   
-  btn.disabled = true;
-  btn.textContent = 'Joining...';
+  // CRITICAL FIX: Get local media BEFORE joining room
+  try {
+    btn.disabled = true;
+    btn.textContent = 'Getting camera...';
+    
+    await initLocalMedia(); // Get media first!
+    
+    btn.textContent = 'Joining...';
+  } catch (error) {
+    console.warn('⚠️ Could not get media, continuing without it:', error);
+    // Continue without media
+  }
   
   socket.emit('join-room', {
     roomId: room,
@@ -186,9 +206,15 @@ async function handleRoomJoined(data) {
     isAdmin: false,
   });
   
-  // Add existing users
-  data.existingUsers.forEach(user => {
-    users.set(user.id, user);
+  // Add existing users (support both 'existingUsers' and 'users' for compatibility)
+  const existingUsers = data.existingUsers || data.users || [];
+  existingUsers.forEach(user => {
+    users.set(user.id || user.userId, {
+      id: user.id || user.userId,
+      displayName: user.displayName,
+      isAdmin: user.isAdmin || false,
+      socketId: user.socketId,
+    });
   });
   
   // Load chat history
@@ -200,16 +226,17 @@ async function handleRoomJoined(data) {
   
   enterRoom();
   
-  // CRITICAL: Connect to ALL existing users
-  // Use deterministic rule: lower userId creates offer
-  for (const existingUser of data.existingUsers) {
+  // CRITICAL FIX: Connect to ALL existing users
+  // We're the new joiner, so WE initiate connections to existing users
+  const existingUsers = data.existingUsers || data.users || [];
+  for (const existingUser of existingUsers) {
+    const peerId = existingUser.id || existingUser.userId;
+    const socketId = existingUser.socketId;
+    
     setTimeout(() => {
-      connectToPeer(existingUser.id, existingUser.socketId);
-    }, Math.random() * 500); // Small stagger to avoid race conditions
+      connectToPeer(peerId, socketId, true); // We initiate (isInitiator = true)
+    }, Math.random() * 300); // Small stagger to avoid overwhelming
   }
-  
-  // Initialize local media
-  await initLocalMedia();
 }
 
 // Enter room UI
@@ -238,9 +265,10 @@ async function handleUserJoined(data) {
   updateRoomInfo();
   updateVideoGrid();
   
-  // CRITICAL: ALL existing users must connect to new user
-  // Use deterministic rule: lower userId creates offer
-  connectToPeer(newUser.id, newUser.socketId);
+  // CRITICAL FIX: When new user joins, existing users wait for their offer
+  // The new user will initiate connection (they call connectToPeer with isInitiator=true)
+  // We just wait for their offer signal
+  console.log(`⏳ Waiting for ${newUser.displayName} to initiate connection`);
 }
 
 // Handle user left
@@ -277,7 +305,7 @@ function handleError(data) {
 }
 
 // Connect to peer (bidirectional mesh connection)
-async function connectToPeer(peerId, peerSocketId) {
+async function connectToPeer(peerId, peerSocketId, isInitiator = false) {
   // Don't connect to self
   if (peerId === userId) return;
   
@@ -293,52 +321,48 @@ async function connectToPeer(peerId, peerSocketId) {
     closePeerConnection(peerId);
   }
   
-  console.log(`🔌 Connecting to peer: ${peerId}`);
+  console.log(`🔌 Connecting to peer: ${peerId}, initiator: ${isInitiator}`);
   
   try {
     // Create peer connection
     const pc = new RTCPeerConnection(ICE_SERVERS);
     peers.set(peerId, pc);
     
-    // Add local tracks if available
+    // CRITICAL FIX: Always add local tracks if available
+    // Media should be available by now (we get it before joining room)
     if (localStream) {
       localStream.getTracks().forEach(track => {
         pc.addTrack(track, localStream);
         console.log(`📤 Added ${track.kind} track to ${peerId}`);
       });
     } else {
-      // No local media - add recvonly transceivers
-      // But also add dummy senders to keep connection alive
-      pc.addTransceiver('audio', { direction: 'recvonly' });
-      pc.addTransceiver('video', { direction: 'recvonly' });
-      
-      // Add dummy audio track to keep connection alive (silent audio)
-      try {
-        const audioContext = new AudioContext();
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-        gainNode.gain.value = 0; // Silent
-        oscillator.connect(gainNode);
-        const destination = audioContext.createMediaStreamDestination();
-        gainNode.connect(destination);
-        oscillator.start();
-        
-        destination.stream.getAudioTracks().forEach(track => {
-          pc.addTrack(track, destination.stream);
-        });
-      } catch (e) {
-        console.warn('⚠️ Could not create dummy audio track:', e);
-      }
+      console.warn('⚠️ No local stream available when creating peer connection');
+      // If no local media, still create connection but may have issues
+      // User should have media by now
     }
     
     // Handle remote tracks
     pc.ontrack = (event) => {
-      console.log(`📥 Received track from ${peerId}:`, event.track.kind);
-      const [remoteStream] = event.streams;
-      if (remoteStream) {
+      console.log(`📥 Received ${event.track.kind} track from ${peerId}`);
+      
+      // CRITICAL FIX: Properly handle track events
+      // Create or update stream for this peer
+      let remoteStream = remoteStreams.get(peerId);
+      if (!remoteStream) {
+        remoteStream = new MediaStream();
         remoteStreams.set(peerId, remoteStream);
-        updateVideoGrid();
       }
+      
+      // Add track to stream
+      remoteStream.addTrack(event.track);
+      
+      console.log(`✅ Stream ready for ${peerId}:`, {
+        videoTracks: remoteStream.getVideoTracks().length,
+        audioTracks: remoteStream.getAudioTracks().length,
+      });
+      
+      // Update UI
+      updateVideoGrid();
     };
     
     // Handle ICE candidates
@@ -382,11 +406,16 @@ async function connectToPeer(peerId, peerSocketId) {
       }
     };
     
-    // Create offer or wait for offer (deterministic rule: lower userId creates offer)
-    if (userId < peerId) {
-      // We create the offer
-      console.log(`📤 Creating offer to ${peerId}`);
-      const offer = await pc.createOffer();
+    // CRITICAL FIX: Connection order
+    // - If we're joining an existing room, WE initiate (isInitiator = true)
+    // - If someone joins after us, THEY initiate (we wait for their offer)
+    if (isInitiator) {
+      // We're the new joiner - we create offers to existing users
+      console.log(`📤 Creating offer to ${peerId} (we're initiator)`);
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
       await pc.setLocalDescription(offer);
       
       socket.emit('signal', {
@@ -397,13 +426,9 @@ async function connectToPeer(peerId, peerSocketId) {
         data: offer,
       });
     } else {
-      // They should create the offer, but set a fallback timeout
-      setTimeout(() => {
-        if (!peers.has(peerId) || peers.get(peerId).remoteDescription === null) {
-          console.log(`⏰ Fallback: Creating offer to ${peerId}`);
-          createOfferToPeer(peerId, pc);
-        }
-      }, 2000);
+      // Someone joined after us - they will create the offer
+      // We just wait for it (handled in handleSignal)
+      console.log(`⏳ Waiting for offer from ${peerId}`);
     }
     
   } catch (error) {
@@ -647,11 +672,11 @@ function closePeerConnection(peerId) {
   }
 }
 
-// Initialize local media
+// Initialize local media (CRITICAL: Called BEFORE joining room)
 async function initLocalMedia() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: true,
+      video: { width: 1280, height: 720 },
       audio: true,
     });
     
@@ -659,26 +684,24 @@ async function initLocalMedia() {
     videoEnabled = stream.getVideoTracks()[0]?.enabled ?? true;
     audioEnabled = stream.getAudioTracks()[0]?.enabled ?? true;
     
+    console.log('✅ Got local media:', {
+      video: stream.getVideoTracks().length,
+      audio: stream.getAudioTracks().length,
+    });
+    
     // Update UI
     updateControls();
     updateVideoGrid();
     
-    // Add tracks to existing peer connections
-    peers.forEach((pc, peerId) => {
-      localStream.getTracks().forEach(track => {
-        const sender = pc.getSenders().find(s => s.track?.kind === track.kind);
-        if (sender) {
-          sender.replaceTrack(track);
-        } else {
-          pc.addTrack(track, localStream);
-        }
-      });
-    });
-    
   } catch (error) {
     console.warn('⚠️ Could not get user media:', error);
-    // User can still join without media
-    showError('Camera/microphone not available. You can still join and chat.');
+    // Set to null but continue - user can join without media
+    localStream = null;
+    videoEnabled = false;
+    audioEnabled = false;
+    
+    // Don't show error - just continue without media
+    // User can still join and chat
   }
 }
 

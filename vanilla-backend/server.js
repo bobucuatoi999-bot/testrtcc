@@ -241,30 +241,37 @@ io.on('connection', (socket) => {
       socketToUser.set(socket.id, { roomId: normalizedRoomId, userId });
       
       // Get existing users (for new joiner to connect to)
+      // CRITICAL FIX: Include socketId for proper signaling
       const existingUsers = Array.from(room.users.values())
         .filter(u => u.id !== userId)
         .map(u => ({
           id: u.id,
+          userId: u.id, // Also include as userId for compatibility
           displayName: u.displayName,
           isAdmin: u.isAdmin,
-          socketId: u.socketId, // Include socketId for signaling
+          socketId: u.socketId, // Required for signaling
         }));
       
-      // Notify new user
+      console.log(`📋 Sending ${existingUsers.length} existing users to new joiner`);
+      
+      // Notify new user with existing users list
       socket.emit('room-joined', {
         roomId: normalizedRoomId,
         userId,
-        existingUsers,
+        users: existingUsers, // Changed from existingUsers to users for compatibility
+        existingUsers: existingUsers, // Keep both for compatibility
         chatHistory: room.chatMessages.slice(-50),
       });
       
       // Notify existing users about new joiner
+      // CRITICAL: Include socketId so existing users can signal back if needed
       socket.to(normalizedRoomId).emit('user-joined', {
         user: {
           id: user.id,
+          userId: user.id, // Also include as userId
           displayName: user.displayName,
           isAdmin: user.isAdmin,
-          socketId: user.socketId,
+          socketId: user.socketId, // Required for signaling
         },
         message: {
           id: generateId(),
