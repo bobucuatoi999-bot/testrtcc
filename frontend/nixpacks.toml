@@ -8,7 +8,7 @@ cmds = ["npm ci"]
 cmds = ["npm run build"]
 
 [start]
-cmd = "npx serve -s dist -l 5173"
+cmd = "npm start"
 
 [variables]
 VITE_API_URL = { default = "http://localhost:3000" }
