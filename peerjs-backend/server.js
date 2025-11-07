@@ -176,12 +176,15 @@ io.on('connection', (socket) => {
         users: existingUsers,
       });
 
-      // Notify existing users about new joiner
-      socket.to(normalizedRoomId).emit('user-joined', {
-        userId,
-        peerId,
-        displayName: displayName.trim(),
-      });
+      // CRITICAL: Notify existing users about new joiner AFTER callback
+      // This ensures new user is fully initialized before existing users try to call
+      setTimeout(() => {
+        socket.to(normalizedRoomId).emit('user-joined', {
+          userId,
+          peerId,
+          displayName: displayName.trim(),
+        });
+      }, 500); // Small delay to ensure new user's PeerJS is ready
 
       console.log(`✅ ${displayName} joined room ${normalizedRoomId} (${room.size}/4 users)`);
     } catch (error) {
