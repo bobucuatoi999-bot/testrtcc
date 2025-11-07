@@ -11,8 +11,25 @@ const { getWorkerPool } = require('./mediasoup/worker');
 const Room = require('./Room');
 const Peer = require('./Peer');
 
+// ============================================
+// Global Error Handlers - Prevent Crashes
+// ============================================
+
+process.on('uncaughtException', (error) => {
+  console.error('💥 Uncaught Exception:', error);
+  // Log but don't exit - keep server running
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+  // Log but don't exit
+});
+
 // Initialize Express app
 const app = express();
+
+// Trust Railway's proxy
+app.set('trust proxy', 1);
 
 // Security middleware
 app.use(helmet({
@@ -110,7 +127,7 @@ if (config.SSL.CERT_PATH && config.SSL.KEY_PATH &&
   console.log(`🌐 HTTP server configured on port ${config.PORT}`);
 }
 
-// Configure Socket.io
+// Configure Socket.io for Railway
 const io = socketIo(server, {
   cors: {
     origin: config.FRONTEND_URL,
@@ -118,8 +135,17 @@ const io = socketIo(server, {
     credentials: true
   },
   transports: ['websocket', 'polling'],
-  pingTimeout: 20000,
-  pingInterval: 25000
+  pingTimeout: 60000, // Longer timeout for Railway
+  pingInterval: 25000,
+  upgradeTimeout: 30000,
+  maxHttpBufferSize: 1e8,
+  allowEIO3: true,
+  path: '/socket.io/'
+});
+
+// Socket.io error handler
+io.on('error', (error) => {
+  console.error('💥 Socket.IO error:', error);
 });
 
 
@@ -213,9 +239,43 @@ async function handlePeerDisconnect(socketId) {
   peersMap.delete(socketId);
 }
 
+// Heartbeat mechanism to detect dead connections
+const heartbeatInterval = setInterval(() => {
+  io.sockets.sockets.forEach((socket) => {
+    if (socket.isAlive === false) {
+      console.log(`💀 Dead socket detected: ${socket.id}`);
+      const peer = peersMap.get(socket.id);
+      if (peer && !peer.disconnecting) {
+        handlePeerDisconnect(socket.id);
+      }
+      return socket.disconnect(true);
+    }
+    
+    socket.isAlive = false;
+    socket.emit('ping');
+  });
+}, 30000);
+
 // Socket.io connection handler
 io.on('connection', (socket) => {
   console.log(`🔌 New socket connection: ${socket.id}`);
+  
+  // Heartbeat mechanism
+  socket.isAlive = true;
+  socket.on('pong', () => {
+    socket.isAlive = true;
+  });
+
+  // Handle reconnection - clear disconnect timeout
+  socket.on('connect', () => {
+    const peer = peersMap.get(socket.id);
+    if (peer && peer.disconnectTimeout) {
+      clearTimeout(peer.disconnectTimeout);
+      peer.disconnecting = false;
+      peer.disconnectTimeout = null;
+      console.log(`🔄 Peer ${peer.id} reconnected, cleanup cancelled`);
+    }
+  });
 
   // Create room
   socket.on('createRoom', async (data, callback) => {
@@ -692,15 +752,51 @@ io.on('connection', (socket) => {
   socket.on('consume', async (data) => {
     try {
       const { roomId, producerId, rtpCapabilities } = data;
-      const peer = peersMap.get(socket.id);
-      if (!peer) {
-        socket.emit('error', { message: 'Peer not found' });
+      
+      const room = getRoom(roomId);
+      if (!room) {
+        socket.emit('consumed', { error: 'Room not found', producerId });
         return;
       }
 
-      const room = getRoom(roomId);
-      if (!room) {
-        socket.emit('error', { message: 'Room not found' });
+      const peer = peersMap.get(socket.id);
+      if (!peer) {
+        console.error(`❌ Peer ${socket.id} not found in room ${roomId}`);
+        socket.emit('consumed', { error: 'Peer not found', producerId });
+        return;
+      }
+
+      // Check if peer is disconnecting
+      if (peer.disconnecting) {
+        console.warn(`⚠️ Peer ${socket.id} is disconnecting, rejecting consume`);
+        socket.emit('consumed', { error: 'Peer disconnecting', producerId });
+        return;
+      }
+
+      // Find the producer's peer
+      const producerPeer = Array.from(room.peers.values()).find(p => {
+        const producer = room.getProducer(producerId);
+        return producer && producer.peerId === p.id;
+      });
+
+      if (!producerPeer) {
+        console.error(`❌ Producer ${producerId} not found in room ${roomId}`);
+        socket.emit('consumed', { error: 'Producer not found', producerId });
+        return;
+      }
+
+      // Check if producer peer is still connected
+      if (producerPeer.disconnecting) {
+        console.warn(`⚠️ Producer peer ${producerPeer.id} is disconnecting`);
+        socket.emit('consumed', { error: 'Producer unavailable', producerId });
+        return;
+      }
+
+      // Verify producer exists
+      const producer = room.getProducer(producerId);
+      if (!producer) {
+        console.error(`❌ Producer ${producerId} not found in room`);
+        socket.emit('consumed', { error: 'Producer not found', producerId });
         return;
       }
 
@@ -714,8 +810,8 @@ io.on('connection', (socket) => {
         rtpParameters: consumer.rtpParameters
       });
     } catch (error) {
-      console.error('Error in consume:', error);
-      socket.emit('error', { message: error.message });
+      console.error('❌ Consume error:', error);
+      socket.emit('consumed', { error: error.message, producerId: data?.producerId });
     }
   });
 
@@ -755,10 +851,23 @@ io.on('connection', (socket) => {
   });
 
   // Disconnect handler
-  socket.on('disconnect', async () => {
-    console.log(`🔌 Socket disconnected: ${socket.id}`);
-    await handlePeerDisconnect(socket.id);
+  socket.on('disconnect', async (reason) => {
+    console.log(`🔌 Socket disconnected: ${socket.id}, reason: ${reason}`);
+    
+    // If it's a client-initiated disconnect (not a network issue), clean up immediately
+    const isClientDisconnect = reason === 'client namespace disconnect' || reason === 'transport close';
+    
+    await handlePeerDisconnect(socket.id, isClientDisconnect);
   });
+});
+
+// Clean up heartbeat interval on shutdown
+process.on('SIGTERM', async () => {
+  clearInterval(heartbeatInterval);
+});
+
+process.on('SIGINT', async () => {
+  clearInterval(heartbeatInterval);
 });
 
 // Graceful shutdown

@@ -403,106 +403,38 @@ function setupSocketHandlers() {
                 iceTransportPolicy: 'all'
             });
 
-            // ✅ CRITICAL: Handle transport connect event
-            // This event is automatically triggered by mediasoup when consume() is called
-            // if the transport is not yet connected
-            // ✅ MUST be set up IMMEDIATELY after transport creation
-            recvTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-                console.log('🔌 [CONNECT EVENT FIRED] Receive transport is connecting...');
-                console.log('🔌 Transport ID:', recvTransport.id);
-                console.log('🔌 Room ID:', currentRoomId);
-                console.log('🔌 DTLS fingerprint:', dtlsParameters.fingerprints?.[0]?.value?.substring(0, 20) + '...');
+            // Handle transport connect event - set up immediately after creation
+            recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                console.log('🔌 Receive transport connecting...');
                 
-                try {
-                    // ✅ CRITICAL: Use acknowledgment-based emit to wait for server confirmation
-                    // Socket.io supports callbacks as the last parameter for acknowledgments
-                    socket.emit('connect-transport', {
-                        transportId: recvTransport.id,
-                        dtlsParameters: dtlsParameters,
-                        roomId: currentRoomId
-                    }, (response) => {
-                        // This callback is the server's acknowledgment
-                        if (response && response.error) {
-                            console.error('❌ Server error connecting transport:', response.error);
-                            errback(new Error(response.error));
-                            return;
-                        }
-                        
-                        console.log('✅ Server confirmed transport connection');
-                        
-                        // ✅ CRITICAL: MUST CALL callback() TO COMPLETE CONNECTION
-                        // This tells mediasoup that the connection process can proceed
+                socket.emit('connect-transport', {
+                    transportId: recvTransport.id,
+                    dtlsParameters: dtlsParameters,
+                    roomId: currentRoomId
+                }, (response) => {
+                    if (response && response.error) {
+                        console.error('❌ Transport connect error:', response.error);
+                        errback(new Error(response.error));
+                    } else {
+                        console.log('✅ Transport connected');
                         callback();
-                        
-                        console.log('✅ Callback executed, transport should connect now');
-                    });
-                    
-                    console.log('📡 Sent connect-transport to server, waiting for acknowledgment...');
-                    
-                } catch (error) {
-                    console.error('❌ Error in receive transport connect handler:', error);
-                    // ✅ CRITICAL: MUST CALL errback() ON ERROR
-                    errback(error);
-                }
+                    }
+                });
             });
 
             recvTransport.on('connectionstatechange', (state) => {
-                console.log(`📥 [CONNECTION STATE] Receive transport: ${state}`);
-                
-                switch (state) {
-                    case 'new':
-                        console.log('🆕 Transport is new (waiting for first consume)');
-                        break;
-                    case 'checking':
-                        console.log('🔍 ICE checking in progress...');
-                        break;
-                    case 'connecting':
-                        console.log('⏳ Transport connecting...');
-                        break;
-                    case 'connected':
-                        console.log('✅ Transport connected successfully!');
-                        break;
-                    case 'disconnected':
-                        console.warn('⚠️ Transport disconnected');
-                        showStatus('Network issue. Reconnecting...', 'error');
-                        break;
-                    case 'failed':
-                        console.error('❌ Transport failed!');
-                        showStatus('Network issue. Reconnecting...', 'error');
-                        setTimeout(() => {
-                            if (recvTransport && !recvTransport.closed) {
-                                recvTransport.restartIce();
-                            }
-                        }, 2000);
-                        break;
-                    case 'closed':
-                        console.log('🔒 Transport closed');
-                        break;
+                console.log('📥 Receive transport state:', state);
+                if (state === 'failed' || state === 'disconnected') {
+                    showStatus('Network issue. Reconnecting...', 'error');
+                    setTimeout(() => {
+                        if (recvTransport && !recvTransport.closed) {
+                            recvTransport.restartIce();
+                        }
+                    }, 2000);
                 }
             });
-            
-            // ICE state change event (for debugging)
-            recvTransport.on('icestatechange', (state) => {
-                console.log(`🧊 [ICE STATE] Receive transport: ${state}`);
-            });
-            
-            // ✅ CRITICAL: Verify handlers are attached
-            const hasConnectHandler = recvTransport.listenerCount && recvTransport.listenerCount('connect') > 0;
-            const hasStateChangeHandler = recvTransport.listenerCount && recvTransport.listenerCount('connectionstatechange') > 0;
-            
-            console.log('✅ Receive transport event handlers attached');
-            console.log('🔍 Connect handler attached:', hasConnectHandler);
-            console.log('🔍 State change handler attached:', hasStateChangeHandler);
-            console.log('📥 Transport ready for consumption');
-            console.log('📥 Initial connection state:', recvTransport.connectionState);
-            
-            // Set a flag to track that transport is ready
-            if (!window.mediasoupTransportsReady) {
-                window.mediasoupTransportsReady = {};
-            }
-            window.mediasoupTransportsReady.recvTransport = true;
-            
-            console.log('✅ Receive transport created and ready');
+
+            console.log('✅ Receive transport created');
 
             // After both transports are ready, start producing local media
             if (sendTransport && recvTransport) {
@@ -890,19 +822,7 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
             throw new Error('Receive transport is closed');
         }
         
-        // ✅ CRITICAL: Verify connect handler is attached BEFORE requesting consumer params
-        const hasConnectHandler = recvTransport.listenerCount && recvTransport.listenerCount('connect') > 0;
-        console.log(`🔍 Connect handler attached: ${hasConnectHandler}`);
-        console.log(`🔍 Transport ID: ${recvTransport.id}`);
-        
-        if (!hasConnectHandler) {
-            console.error('❌ CRITICAL: Connect handler not attached! Transport will not connect.');
-            throw new Error('Transport connect handler not attached. Transport not ready.');
-        }
-
-        console.log(`🔄 Requesting to consume ${kind} from producer ${producerId} (user: ${remoteUserName || socketId})`);
-        console.log(`🔍 Transport state: ${recvTransport.connectionState}, Device loaded: ${device.loaded}`);
-        console.log(`🔍 NOTE: Transport will connect automatically when consume() is called (if not already connected)`);
+        console.log(`🔄 Consuming ${kind} from producer ${producerId}`);
         
         // Request to consume this producer
         socket.emit('consume', {
@@ -926,6 +846,13 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
                 
                 clearTimeout(timeout);
                 socket.off('consumed', consumedHandler);
+                
+                // Check for error in response
+                if (data.error) {
+                    reject(new Error(data.error));
+                    return;
+                }
+                
                 resolve(data);
             };
             

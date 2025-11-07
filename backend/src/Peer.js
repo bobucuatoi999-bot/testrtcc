@@ -16,6 +16,8 @@ class Peer {
     this.joinedAt = Date.now();
     this.lastHeartbeat = Date.now();
     this.isAlive = true;
+    this.disconnecting = false;
+    this.disconnectTimeout = null;
   }
 
   /**
