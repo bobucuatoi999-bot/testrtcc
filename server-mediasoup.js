@@ -472,20 +472,25 @@ io.on('connection', (socket) => {
   // Handle Connect Transport
   // ============================================
 
-  socket.on('connect-transport', async (data) => {
+  socket.on('connect-transport', async (data, callback) => {
+    // ✅ CRITICAL: Socket.io acknowledgment callback - MUST be called
     try {
       const { transportId, dtlsParameters, roomId } = data || {};
 
+      console.log(`🔌 [SERVER] Transport connect request: ${transportId}`);
+      console.log(`🔌 [SERVER] Socket ID: ${socket.id}`);
+      console.log(`🔌 [SERVER] Room ID: ${roomId}`);
+
       if (!transportId || !dtlsParameters || !roomId) {
-        console.error('❌ Missing transport parameters for connect-transport');
-        socket.emit('error', { message: 'Missing transport parameters' });
+        console.error('❌ [SERVER] Missing transport parameters');
+        if (callback) callback({ error: 'Missing transport parameters' });
         return;
       }
 
       const userTransports = roomTransports.get(roomId)?.get(socket.id);
       if (!userTransports) {
-        console.error(`❌ User transports not found for socket ${socket.id} in room ${roomId}`);
-        socket.emit('error', { message: 'Transport not found' });
+        console.error(`❌ [SERVER] User transports not found for socket ${socket.id} in room ${roomId}`);
+        if (callback) callback({ error: 'Transport not found' });
         return;
       }
 
@@ -496,34 +501,52 @@ io.on('connection', (socket) => {
       if (userTransports.sendTransport && userTransports.sendTransport.id === transportId) {
         transport = userTransports.sendTransport;
         transportType = 'send';
+        console.log('🔌 [SERVER] Found send transport');
       } else if (userTransports.recvTransport && userTransports.recvTransport.id === transportId) {
         transport = userTransports.recvTransport;
         transportType = 'recv';
+        console.log('🔌 [SERVER] Found receive transport');
       }
 
       if (!transport) {
-        console.error(`❌ Transport ${transportId} not found for socket ${socket.id}`);
-        socket.emit('error', { message: 'Transport not found' });
+        console.error(`❌ [SERVER] Transport ${transportId} not found for socket ${socket.id}`);
+        if (callback) callback({ error: 'Transport not found' });
         return;
       }
 
-      console.log(`🔌 Connecting ${transportType} transport ${transportId} for user ${socket.id}...`);
+      console.log(`🔌 [SERVER] Connecting ${transportType} transport with DTLS parameters...`);
       
       // ✅ CRITICAL: Connect the transport with DTLS parameters
       await transport.connect({ dtlsParameters });
       
-      console.log(`✅ ${transportType} Transport ${transportId} connected successfully for user ${socket.id}`);
+      console.log(`✅ [SERVER] ${transportType} Transport ${transportId} connected successfully for user ${socket.id}`);
       
-      // Emit confirmation to client (though callback may have already been called)
+      // ✅ CRITICAL: MUST respond to client with acknowledgment
+      // This is the callback parameter from socket.emit('connect-transport', data, callback)
+      if (callback) {
+        callback({ connected: true, transportId, type: transportType });
+      }
+      
+      // Also emit for backward compatibility (though callback is preferred)
       socket.emit('transport-connected', { transportId, type: transportType });
 
     } catch (error) {
-      console.error(`❌ Error connecting transport:`, error);
+      console.error(`❌ [SERVER] Error connecting transport:`, error);
       console.error('Error details:', {
         name: error.name,
         message: error.message,
         stack: error.stack
       });
+      
+      // ✅ CRITICAL: MUST respond with error in acknowledgment callback
+      if (callback) {
+        callback({ 
+          error: error.message,
+          code: 'TRANSPORT_CONNECT_ERROR'
+        });
+      }
+      
+      // Also emit error for backward compatibility
       socket.emit('error', { 
         message: 'Failed to connect transport', 
         error: error.message,

@@ -283,16 +283,34 @@ function setupSocketHandlers() {
                 iceTransportPolicy: 'all'
             });
 
-            // Handle transport connect event
+            // ✅ CRITICAL: Handle transport connect event
+            // MUST be set up IMMEDIATELY after transport creation
             sendTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                console.log('🔌 [CONNECT EVENT FIRED] Send transport is connecting...');
+                console.log('🔌 Transport ID:', sendTransport.id);
+                
                 try {
+                    // ✅ CRITICAL: Use acknowledgment-based emit to wait for server confirmation
                     socket.emit('connect-transport', {
                         transportId: sendTransport.id,
                         dtlsParameters: dtlsParameters,
                         roomId: currentRoomId
+                    }, (response) => {
+                        // This callback is the server's acknowledgment
+                        if (response && response.error) {
+                            console.error('❌ Server error connecting send transport:', response.error);
+                            errback(new Error(response.error));
+                            return;
+                        }
+                        
+                        console.log('✅ Server confirmed send transport connection');
+                        callback();
                     });
-                    callback();
+                    
+                    console.log('📡 Sent connect-transport to server for send transport, waiting for acknowledgment...');
+                    
                 } catch (error) {
+                    console.error('❌ Error in send transport connect handler:', error);
                     errback(error);
                 }
             });
@@ -388,59 +406,89 @@ function setupSocketHandlers() {
             // ✅ CRITICAL: Handle transport connect event
             // This event is automatically triggered by mediasoup when consume() is called
             // if the transport is not yet connected
+            // ✅ MUST be set up IMMEDIATELY after transport creation
             recvTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-                console.log('📥 Receive transport connect event triggered!');
-                console.log('📥 Transport ID:', recvTransport.id);
-                console.log('📥 Room ID:', currentRoomId);
-                console.log('📥 DTLS fingerprint:', dtlsParameters.fingerprints?.[0]?.value?.substring(0, 20) + '...');
+                console.log('🔌 [CONNECT EVENT FIRED] Receive transport is connecting...');
+                console.log('🔌 Transport ID:', recvTransport.id);
+                console.log('🔌 Room ID:', currentRoomId);
+                console.log('🔌 DTLS fingerprint:', dtlsParameters.fingerprints?.[0]?.value?.substring(0, 20) + '...');
                 
                 try {
-                    // ✅ CRITICAL: Emit to server to connect the transport
-                    // The server will call transport.connect({ dtlsParameters }) which establishes the DTLS connection
+                    // ✅ CRITICAL: Use acknowledgment-based emit to wait for server confirmation
+                    // Socket.io supports callbacks as the last parameter for acknowledgments
                     socket.emit('connect-transport', {
                         transportId: recvTransport.id,
                         dtlsParameters: dtlsParameters,
                         roomId: currentRoomId
+                    }, (response) => {
+                        // This callback is the server's acknowledgment
+                        if (response && response.error) {
+                            console.error('❌ Server error connecting transport:', response.error);
+                            errback(new Error(response.error));
+                            return;
+                        }
+                        
+                        console.log('✅ Server confirmed transport connection');
+                        
+                        // ✅ CRITICAL: MUST CALL callback() TO COMPLETE CONNECTION
+                        // This tells mediasoup that the connection process can proceed
+                        callback();
+                        
+                        console.log('✅ Callback executed, transport should connect now');
                     });
                     
-                    console.log('📥 Emitted connect-transport to server, waiting for server to connect...');
-                    
-                    // ✅ IMPORTANT: In mediasoup, we must call callback() to allow the transport to proceed
-                    // The actual connection happens asynchronously on the server side
-                    // If the server fails to connect, the transport's connectionstatechange will fire with 'failed'
-                    // So we call callback() here, and monitor the connection state via connectionstatechange handler
-                    callback();
-                    
-                    console.log('📥 Callback called - transport connect initiated');
+                    console.log('📡 Sent connect-transport to server, waiting for acknowledgment...');
                     
                 } catch (error) {
                     console.error('❌ Error in receive transport connect handler:', error);
+                    // ✅ CRITICAL: MUST CALL errback() ON ERROR
                     errback(error);
                 }
             });
 
             recvTransport.on('connectionstatechange', (state) => {
-                console.log('📡 Recv transport connection state changed:', state);
+                console.log(`📥 [CONNECTION STATE] Receive transport: ${state}`);
                 
-                if (state === 'connecting') {
-                    console.log('⏳ Receive transport is connecting...');
-                } else if (state === 'connected') {
-                    console.log('✅ Receive transport connected successfully!');
-                } else if (state === 'failed') {
-                    console.error('❌ Receive transport connection failed!');
-                    showStatus('Network issue. Reconnecting...', 'error');
-                    setTimeout(() => {
-                        if (recvTransport && !recvTransport.closed) {
-                            recvTransport.restartIce();
-                        }
-                    }, 2000);
-                } else if (state === 'disconnected') {
-                    console.warn('⚠️ Receive transport disconnected');
-                    showStatus('Network issue. Reconnecting...', 'error');
-                } else if (state === 'closed') {
-                    console.log('🔒 Receive transport closed');
+                switch (state) {
+                    case 'new':
+                        console.log('🆕 Transport is new (waiting for first consume)');
+                        break;
+                    case 'checking':
+                        console.log('🔍 ICE checking in progress...');
+                        break;
+                    case 'connecting':
+                        console.log('⏳ Transport connecting...');
+                        break;
+                    case 'connected':
+                        console.log('✅ Transport connected successfully!');
+                        break;
+                    case 'disconnected':
+                        console.warn('⚠️ Transport disconnected');
+                        showStatus('Network issue. Reconnecting...', 'error');
+                        break;
+                    case 'failed':
+                        console.error('❌ Transport failed!');
+                        showStatus('Network issue. Reconnecting...', 'error');
+                        setTimeout(() => {
+                            if (recvTransport && !recvTransport.closed) {
+                                recvTransport.restartIce();
+                            }
+                        }, 2000);
+                        break;
+                    case 'closed':
+                        console.log('🔒 Transport closed');
+                        break;
                 }
             });
+            
+            // ICE state change event (for debugging)
+            recvTransport.on('icestatechange', (state) => {
+                console.log(`🧊 [ICE STATE] Receive transport: ${state}`);
+            });
+            
+            console.log('✅ Receive transport event handlers attached');
+            console.log('📥 Transport ready for consumption');
+            console.log('📥 Initial connection state:', recvTransport.connectionState);
 
             console.log('✅ Receive transport created');
 
