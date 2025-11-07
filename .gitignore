@@ -1,18 +1,21 @@
 # Dependencies
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Capacitor
-.capacitor/
-android/
-ios/
-dist/
+*/node_modules/
 
 # Environment variables
 .env
 .env.local
+.env.production
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Build outputs
+dist/
+build/
+*.build/
 
 # IDE
 .vscode/
@@ -25,12 +28,14 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Build outputs
-*.apk
-*.aab
-*.ipa
+# Docker
+.docker/
 
-# Logs
-logs/
-*.log
+# Test coverage
+coverage/
+.nyc_output/
 
+# Temporary files
+tmp/
+temp/
+*.tmp

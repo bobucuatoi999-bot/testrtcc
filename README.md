@@ -1,180 +1,288 @@
-# WebRTC Video & Voice Call System
+# WebRTC Mesh Video Call App
 
-A complete, reliable WebRTC-based video and voice call system with auto-start calls, mute, camera toggle, and screen sharing.
+A complete, production-ready video call application supporting up to 4 participants using pure WebRTC peer-to-peer mesh networking. Built with React, Node.js, Express, and coturn for TURN/STUN services.
 
-## 🚀 Features
+## Features
 
-- ✅ **Room-based 1-on-1 calls** - Enter room code to connect
-- ✅ **Auto-start calls** - Automatically connects when both users join
-- ✅ **Mute/Unmute** - Toggle microphone on/off
-- ✅ **Camera Toggle** - Turn camera on/off (audio-only fallback)
-- ✅ **Screen Sharing** - Share your screen with remote user
-- ✅ **No Camera/Mic Required** - Users without devices can still join and receive
-- ✅ **Free STUN/TURN Servers** - Uses Google STUN + OpenRelay TURN for reliability
-- ✅ **Error Handling** - User-friendly error messages and auto-reconnection
-- ✅ **Global Access** - Deployed on Railway for worldwide access
+- ✅ Pure WebRTC mesh (no SFU/MCU)
+- ✅ Up to 4 participants per room
+- ✅ Screen sharing
+- ✅ Audio/video controls
+- ✅ Room password protection
+- ✅ Mobile-responsive UI
+- ✅ TURN/STUN via coturn
+- ✅ WebSocket signaling
+- ✅ Docker Compose for local dev and production
+- ✅ Railway deployment ready
+- ✅ End-to-end Puppeteer tests
 
-## 📦 Tech Stack
+## Architecture
 
-- **Backend**: Node.js + Express + Socket.io
-- **Frontend**: HTML5 + JavaScript (PeerJS)
-- **WebRTC**: PeerJS for peer connections
-- **Signaling**: Socket.io for real-time communication
-- **Deployment**: Railway.app
+- **Frontend**: React + Vite SPA with native WebRTC APIs
+- **Backend**: Node.js + Express + WebSocket (ws) for signaling
+- **Media**: WebRTC peer-to-peer mesh
+- **NAT Traversal**: coturn (STUN/TURN)
+- **Orchestration**: Docker Compose
+- **Deployment**: Railway (Dockerfile-based)
 
-## 🎯 Quick Start
+## Quick Start
+
+### Prerequisites
+
+- Docker and Docker Compose
+- Node.js 20+ (for local development)
+- Make (optional, for convenience commands)
 
 ### Local Development
 
-1. **Install dependencies:**
+1. **Clone the repository**
    ```bash
-   npm install
+   git clone <your-repo-url>
+   cd webrtc-mesh-video-call
    ```
 
-2. **Start the server:**
+2. **Set up environment variables**
    ```bash
+   cp .env.example .env
+   # Edit .env with your configuration
+   ```
+
+3. **Start services**
+   ```bash
+   make setup && make up
+   # OR manually:
+   # docker-compose up --build
+   ```
+
+4. **Access the application**
+   - Frontend: http://localhost:5173
+   - Backend API: http://localhost:3000
+   - Health check: http://localhost:3000/health
+
+### Manual Setup (without Docker)
+
+1. **Backend setup**
+   ```bash
+   cd backend
+   npm install
    npm start
    ```
 
-3. **Open in browser:**
-   - Visit: `http://localhost:3000`
-   - Enter your name and a room code
-   - Click "Start Video Call" or "Start Voice Call"
+2. **Frontend setup**
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
 
-### Testing
+3. **TURN server setup**
+   - Install coturn on your system
+   - Configure `/etc/turnserver.conf` using `coturn/turnserver.conf.template`
+   - Start coturn: `turnserver -c /etc/turnserver.conf`
 
-1. Open two browser tabs/windows
-2. Enter the same room code in both
-3. Both users will automatically connect when second user joins
-4. Test mute, camera, and screen sharing buttons
+## Configuration
 
-## 🌐 Production Deployment
+### Environment Variables
 
-The app is deployed on Railway:
-- **URL**: `https://testrtcc-production.up.railway.app`
-- **Auto-deploy**: Updates automatically when you push to GitHub
+See `.env.example` for all available configuration options.
 
-## 📝 How It Works
+**Key variables:**
+- `MAX_PARTICIPANTS`: Maximum participants per room (default: 4)
+- `TURN_SECRET`: Secret for generating TURN credentials (change in production!)
+- `JWT_SECRET`: Secret for JWT tokens (change in production!)
+- `TURNHOST`: TURN server hostname or IP
+- `PUBLIC_URL`: Public URL of your application (HTTPS required for production)
 
-### Connection Flow
+### TURN Server Configuration
 
-1. User enters name and room code
-2. User clicks "Start Video Call" or "Start Voice Call"
-3. App requests camera/microphone access
-4. User joins room on signaling server (Socket.io)
-5. PeerJS initializes and generates peer ID
-6. When second user joins, PeerJS IDs are exchanged
-7. Peer-to-peer connection established automatically
-8. Video/audio streams are shared
+**Important Notes:**
+- Railway may have limitations with UDP traffic. For production, consider:
+  1. Hosting coturn on a separate VM with UDP ports 3478/5349 and TCP 5349 (TLS)
+  2. Using TURN over TLS (TCP 5349) instead of UDP
+  3. STUN-only fallback mode (limited NAT traversal, may not work in all networks)
 
-### Features Explained
+**TURN over TLS (Recommended for Railway)**
+- Set `TURNPORT=5349` and use `turns:` scheme in WebRTC config
+- Ensure coturn is configured with TLS certificates
 
-- **Auto-Start**: When both users are in the room, connection starts automatically
-- **Mute**: Toggles microphone on/off (mutes your audio)
-- **Camera**: Toggles camera on/off (shows black screen when off)
-- **Screen Share**: Replaces video with screen content
-- **No Device Required**: Users without camera/mic can still join and receive audio/video
+**STUN-only Fallback**
+- Set `TURNHOST=` (empty) to disable TURN
+- Only STUN will be used (freeze.com or google.com STUN servers)
+- ⚠️ **Warning**: May fail in symmetric NAT scenarios
 
-## 🔧 Configuration
+## Testing
 
-### Server URL
+### Run E2E Tests
 
-Edit `public/config.js` to change server URL:
-```javascript
-window.SERVER_URL = 'https://your-server-url.com';
+```bash
+make test
+# OR manually:
+cd tests
+./run-tests.sh
 ```
 
-### STUN/TURN Servers
+The test suite:
+- Spins up Docker Compose
+- Launches 3 headless browsers
+- Joins the same room
+- Validates media tracks from remote peers
+- Attempts 5th join and confirms it's blocked
 
-Currently using free servers:
-- **STUN**: Google's public STUN servers (free)
-- **TURN**: OpenRelay (free, no auth required)
+### Manual Testing Checklist
 
-To use custom TURN server, edit `public/client.js`:
-```javascript
-const rtcConfig = {
-    iceServers: [
-        // Add your TURN server here
-        { 
-            urls: 'turn:your-turn-server:3478',
-            username: 'your-username',
-            credential: 'your-password'
-        }
-    ]
-};
+- [ ] **Mobile Testing**
+  - [ ] Safari iOS (iPhone/iPad)
+  - [ ] Chrome Android
+  - [ ] Test camera/mic permissions
+
+- [ ] **NAT Scenarios**
+  - [ ] Home router (typical NAT)
+  - [ ] Mobile hotspot
+  - [ ] Corporate firewall
+
+- [ ] **TURN Verification**
+  - [ ] Block UDP to force TCP fallback
+  - [ ] Verify TURN credentials are working
+  - [ ] Test with STUN-only mode
+
+- [ ] **Railway Deployment**
+  - [ ] End-to-end deployment test
+  - [ ] Verify HTTPS is working
+  - [ ] Test from multiple networks
+
+- [ ] **Features**
+  - [ ] Screen share
+  - [ ] Reconnect behavior
+  - [ ] Audio/video toggle
+  - [ ] Room password protection
+  - [ ] Participant limit enforcement
+
+## Deployment
+
+### Railway Deployment
+
+1. **Push to GitHub**
+   ```bash
+   git push origin main
+   ```
+
+2. **Create Railway Project**
+   - Go to Railway dashboard
+   - Click "New Project"
+   - Select "Deploy from GitHub repo"
+   - Choose your repository
+
+3. **Configure Services**
+   - **Backend Service**: Use `backend/Dockerfile`
+     - Port: 3000
+     - Environment variables: Set all from `.env.example`
+   - **Frontend Service**: Use `frontend/Dockerfile`
+     - Port: 5173 (or configure via env)
+     - Set `VITE_API_URL` to backend service URL
+
+4. **Set Environment Variables**
+   - Copy all variables from `.env.example`
+   - Set `PUBLIC_URL` to your Railway domain (HTTPS)
+   - Set `TURN_SECRET` and `JWT_SECRET` to strong random values
+   - Configure `TURNHOST` (or leave empty for STUN-only)
+
+5. **TURN Server Setup**
+   - **Option 1**: Host coturn separately on a VM
+     - Install coturn on Ubuntu/Debian VM
+     - Configure firewall (UDP 3478/5349, TCP 5349)
+     - Set `TURNHOST` to VM's IP/domain
+   - **Option 2**: Use TURN over TLS (TCP 5349)
+     - Configure coturn with TLS certificates
+     - Set `TURNPORT=5349`
+   - **Option 3**: STUN-only (limited reliability)
+     - Leave `TURNHOST` empty
+     - Will use public STUN servers
+
+6. **Deploy**
+   - Railway will automatically build and deploy
+   - Check logs for any errors
+   - Test the deployed application
+
+### Production Docker Compose
+
+```bash
+docker-compose -f docker-compose.prod.yml build
+docker-compose -f docker-compose.prod.yml up -d
 ```
 
-## 📁 Project Structure
+## API Documentation
 
-```
-.
-├── server.js              # Express + Socket.io signaling server
-├── package.json           # Dependencies
-├── public/
-│   ├── index.html        # Frontend UI
-│   ├── client.js         # WebRTC client logic (PeerJS)
-│   └── config.js         # Server URL configuration
-└── README.md             # This file
-```
+### REST Endpoints
 
-## 🐛 Troubleshooting
+- `GET /health` - Health check
+- `GET /metrics` - Prometheus metrics (if enabled)
+- `GET /api/turn` - Get TURN credentials
+- `POST /api/rooms` - Create a room
+- `POST /api/rooms/join` - Join a room
+- `POST /api/rooms/leave` - Leave a room
 
-### Connection Issues
+### WebSocket Signaling
 
-1. **Check browser console** for errors
-2. **Verify server is running** - Check Railway logs
-3. **Check firewall** - WebRTC needs UDP ports open
-4. **Try different network** - Some networks block WebRTC
+**Connection**: `ws://your-domain/ws?token=<jwt-token>`
 
-### Media Access Issues
+**Messages**:
+- `join` - Join a room
+- `offer` - Send SDP offer
+- `answer` - Send SDP answer
+- `candidate` - Send ICE candidate
+- `leave` - Leave room
+- `ping` - Keep-alive
+- `pong` - Keep-alive response
 
-1. **Allow camera/mic permissions** in browser
-2. **Check device manager** - Ensure camera/mic are working
-3. **Try different browser** - Chrome/Firefox recommended
+## Security
 
-### No Video/Audio
+- HTTPS required for production (WebRTC requires secure context)
+- JWT tokens for WebSocket authentication
+- Rate limiting on WebSocket messages
+- CORS configuration for frontend origin
+- TURN credentials with time-limited validity
+- Room password protection
 
-1. **Check mute button** - Make sure mic isn't muted
-2. **Check camera button** - Make sure camera is on
-3. **Refresh page** - Sometimes helps with connection issues
+## Monitoring
 
-## 📚 API Reference
+Optional Prometheus metrics available at `/metrics`:
+- Connected rooms count
+- Active participants count
+- WebSocket messages per second
 
-### Socket.io Events
+Grafana dashboard available in docker-compose (disabled by default).
 
-**Client → Server:**
-- `join-room` - Join a room with roomId and userName
-- `peer-id` - Send PeerJS ID to other users
-- `end-call` - End the current call
-- `leave-room` - Leave room without ending call
+## Troubleshooting
 
-**Server → Client:**
-- `room-joined` - Confirmation of room join
-- `room-users` - List of existing users in room
-- `user-joined` - New user joined the room
-- `user-left` - User left the room
-- `peer-id` - Received PeerJS ID from another user
-- `call-ended` - Call was ended by other user
+### No video/audio
+- Check browser console for errors
+- Verify camera/mic permissions
+- Check TURN server connectivity
+- Verify ICE candidates are being exchanged
 
-## 🎓 Learning Resources
+### Connection failures
+- Verify TURN server is accessible
+- Check firewall rules (UDP 3478/5349, TCP 5349)
+- Test with STUN-only mode to isolate TURN issues
+- Check WebSocket connection status
 
-- [WebRTC Documentation](https://webrtc.org/)
-- [PeerJS Documentation](https://peerjs.com/docs)
-- [Socket.io Documentation](https://socket.io/docs/v4/)
+### Room full errors
+- Verify `MAX_PARTICIPANTS` is set correctly
+- Check backend logs for participant count
+- Ensure proper cleanup on participant leave
 
-## 📄 License
+## License
 
-ISC
+MIT License - See LICENSE file for details
 
-## 🙏 Credits
+## Contributing
 
-Built with:
-- PeerJS - WebRTC peer connections
-- Socket.io - Real-time signaling
-- Express - Web server
-- Google STUN servers - Free NAT traversal
-- OpenRelay TURN server - Free relay service
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests
+5. Submit a pull request
 
----
+## Support
 
-**Ready to use!** Just deploy and start making calls! 🎉
+For issues and questions, please open an issue on GitHub.

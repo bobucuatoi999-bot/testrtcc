@@ -237,186 +237,105 @@
         </div>
     </div>
 
-    <!-- Load libraries -->
-    <!-- Load mediasoup-client - try server bundle first (most reliable), then CDN fallbacks -->
+    <!-- Frontend scripts will be loaded here -->
     <script>
-        // Function to load mediasoup-client with multiple fallbacks
-        // Priority: 1) Server bundle, 2) esm.sh CDN, 3) skypack CDN
-        function loadMediasoupClient(callback) {
-            // Priority 1: Try server-bundled version (most reliable, no external dependency)
-            console.log('📦 Loading mediasoup-client from server bundle...');
-            const script = document.createElement('script');
-            script.src = '/mediasoup-client-bundle.js';
-            script.async = false;
-            
-            script.onload = function() {
-                console.log('📦 Mediasoup bundle script loaded, checking for global...');
-                setTimeout(() => {
-                    // Check for mediasoup in multiple possible locations
-                    const mediasoupLib = window.mediasoup || window.mediasoupClient || (typeof mediasoup !== 'undefined' ? mediasoup : null);
-                    
-                    if (mediasoupLib && typeof mediasoupLib.Device !== 'undefined') {
-                        // Make sure it's available globally
-                        if (!window.mediasoup) {
-                            window.mediasoup = mediasoupLib;
-                        }
-                        console.log('✅ Mediasoup client loaded from server bundle');
-                        console.log('📋 Mediasoup Device available:', typeof window.mediasoup.Device !== 'undefined');
-                        callback();
-                    } else {
-                        console.error('❌ Mediasoup bundle loaded but Device class not found');
-                        console.log('Available globals:', Object.keys(window).filter(k => k.toLowerCase().includes('media')));
-                        // Try CDN fallback
-                        loadMediasoupClientCDN(callback);
-                    }
-                }, 200);
-            };
-            
-            script.onerror = function() {
-                console.error('❌ Server bundle not found, trying CDN fallback...');
-                loadMediasoupClientCDN(callback);
-            };
-            
-            document.head.appendChild(script);
+        // Frontend-only initialization
+        console.log('📄 Meeting page loaded');
+        
+        // Placeholder functions for UI elements
+        function copyMeetingId() {
+            const meetingId = document.getElementById('meetingIdValue').textContent;
+            if (meetingId && meetingId !== '-') {
+                navigator.clipboard.writeText(meetingId);
+                alert('Meeting ID copied to clipboard!');
+            }
         }
         
-        // Fallback: Try esm.sh CDN (converts Node modules to browser-compatible)
-        function loadMediasoupClientCDN(callback) {
-            console.log('🔄 Trying esm.sh CDN...');
-            const script = document.createElement('script');
-            script.type = 'module';
-            script.textContent = `
-                import * as mediasoupClient from 'https://esm.sh/mediasoup-client@3.7.9';
-                window.mediasoup = mediasoupClient;
-                console.log('✅ Mediasoup client loaded from esm.sh');
-                window.mediasoupLoaded = true;
-            `;
-            script.onerror = function() {
-                console.error('❌ esm.sh failed, trying skypack...');
-                loadMediasoupClientSkypack(callback);
-            };
-            document.head.appendChild(script);
-            
-            // Wait for the module to load
-            const checkLoaded = setInterval(() => {
-                if (window.mediasoupLoaded && window.mediasoup) {
-                    clearInterval(checkLoaded);
-                    callback();
-                }
-            }, 100);
-            
-            // Timeout after 10 seconds
-            setTimeout(() => {
-                if (!window.mediasoupLoaded) {
-                    clearInterval(checkLoaded);
-                    console.error('❌ esm.sh timeout, trying skypack...');
-                    loadMediasoupClientSkypack(callback);
-                }
-            }, 10000);
+        function toggleMute() {
+            console.log('Toggle mute clicked');
         }
         
-        // Last resort: Try skypack CDN
-        function loadMediasoupClientSkypack(callback) {
-            console.log('🔄 Trying skypack CDN (last resort)...');
-            const script = document.createElement('script');
-            script.type = 'module';
-            script.textContent = `
-                import * as mediasoupClient from 'https://cdn.skypack.dev/mediasoup-client@3.7.9';
-                window.mediasoup = mediasoupClient;
-                console.log('✅ Mediasoup client loaded from skypack');
-                window.mediasoupLoaded = true;
-            `;
-            script.onerror = function() {
-                console.error('❌ All CDN attempts failed');
-                alert('Failed to load mediasoup-client library. Please check your internet connection and refresh the page.');
-            };
-            document.head.appendChild(script);
-            
-            // Wait for the module to load
-            const checkLoaded = setInterval(() => {
-                if (window.mediasoupLoaded && window.mediasoup) {
-                    clearInterval(checkLoaded);
-                    callback();
-                }
-            }, 100);
-            
-            // Timeout after 10 seconds
-            setTimeout(() => {
-                if (!window.mediasoupLoaded) {
-                    clearInterval(checkLoaded);
-                    console.error('❌ All CDN attempts failed');
-                    alert('Failed to load mediasoup-client library. Please check your internet connection and refresh the page.');
-                }
-            }, 10000);
+        function toggleCamera() {
+            console.log('Toggle camera clicked');
         }
         
-        // Load mediasoup-client first, then other scripts
-        loadMediasoupClient(() => {
-            // Load config first (needed for SERVER_URL)
-            const configScript = document.createElement('script');
-            configScript.src = 'config.js';
-            configScript.onload = () => {
-                console.log('✅ config.js loaded');
-                
-                // Then load socket.io
-                const socketScript = document.createElement('script');
-                socketScript.src = '/socket.io/socket.io.js';
-                socketScript.onload = () => {
-                    console.log('✅ socket.io.js loaded');
-                    
-                    // Wait a bit for socket.io to be ready
-                    setTimeout(() => {
-                        // Finally load our client script
-                        const clientScript = document.createElement('script');
-                        clientScript.src = 'client-mediasoup.js';
-                        clientScript.onload = () => {
-                            console.log('✅ client-mediasoup.js loaded');
-                            // Wait a bit to ensure all functions are defined
-                            setTimeout(() => {
-                                // Try to call initializeMeeting from window
-                                const initFn = window.initializeMeeting || (typeof initializeMeeting !== 'undefined' ? initializeMeeting : null);
-                                if (typeof initFn === 'function') {
-                                    console.log('🚀 Calling initializeMeeting...');
-                                    initFn();
-                                } else {
-                                    console.warn('⚠️ initializeMeeting function not found, trying direct initialization...');
-                                    // Try alternative: manually trigger initialization
-                                    const urlParams = new URLSearchParams(window.location.search);
-                                    const roomId = urlParams.get('room');
-                                    const name = urlParams.get('name');
-                                    const password = urlParams.get('password');
-                                    
-                                    // Wait a bit more for functions to be defined
-                                    setTimeout(() => {
-                                        const joinFn = window.joinRoom || (typeof joinRoom !== 'undefined' ? joinRoom : null);
-                                        if (roomId && name && typeof joinFn === 'function') {
-                                            console.log('🚀 Manually joining room...');
-                                            joinFn(roomId, decodeURIComponent(name), password ? decodeURIComponent(password) : null);
-                                        } else {
-                                            console.error('❌ Cannot initialize: joinRoom function not found');
-                                            showStatus('Failed to initialize meeting. Please refresh the page.', 'error');
-                                        }
-                                    }, 500);
-                                }
-                            }, 300);
-                        };
-                        clientScript.onerror = () => {
-                            console.error('❌ Failed to load client-mediasoup.js');
-                            alert('Failed to load client script. Please refresh the page.');
-                        };
-                        document.head.appendChild(clientScript);
-                    }, 100);
-                };
-                socketScript.onerror = () => {
-                    console.error('❌ Failed to load socket.io.js');
-                    alert('Failed to load Socket.io. Please refresh the page.');
-                };
-                document.head.appendChild(socketScript);
-            };
-            configScript.onerror = () => {
-                console.error('❌ Failed to load config.js');
-            };
-            document.head.appendChild(configScript);
+        function toggleScreenShare() {
+            console.log('Toggle screen share clicked');
+        }
+        
+        function toggleChat() {
+            const panel = document.getElementById('chatPanel');
+            panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+        }
+        
+        function toggleParticipants() {
+            const panel = document.getElementById('participantsPanel');
+            panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+        }
+        
+        function togglePasswordConfig() {
+            console.log('Toggle password config clicked');
+        }
+        
+        function endCall() {
+            if (confirm('Are you sure you want to leave the meeting?')) {
+                window.location.href = '/';
+            }
+        }
+        
+        function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            if (message) {
+                console.log('Send message:', message);
+                input.value = '';
+            }
+        }
+        
+        function closePasswordModal() {
+            document.getElementById('passwordModal').style.display = 'none';
+        }
+        
+        function submitPassword() {
+            console.log('Submit password clicked');
+        }
+        
+        function closeAdminPasswordModal() {
+            document.getElementById('adminPasswordModal').style.display = 'none';
+        }
+        
+        function submitAdminPassword() {
+            console.log('Submit admin password clicked');
+        }
+        
+        function openSetPasswordModal() {
+            console.log('Open set password modal');
+        }
+        
+        function openResetPasswordModal() {
+            console.log('Open reset password modal');
+        }
+        
+        function togglePasswordVisibility() {
+            console.log('Toggle password visibility');
+        }
+        
+        function toggleAdminPasswordVisibility() {
+            console.log('Toggle admin password visibility');
+        }
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('✅ Meeting page initialized');
+            
+            // Get URL parameters
+            const urlParams = new URLSearchParams(window.location.search);
+            const roomId = urlParams.get('room');
+            const name = urlParams.get('name');
+            
+            if (roomId) {
+                document.getElementById('meetingIdValue').textContent = roomId;
+            }
         });
     </script>
 </body>

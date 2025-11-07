@@ -1,14 +1,15 @@
 // ============================================
-// Server Configuration
+// Frontend Configuration
 // ============================================
-// This file configures the signaling server URL
-// For Railway deployment, this is automatically set
+// Configuration for the frontend application
 
-// Production URL - Railway deployment
-// Update this with your Railway URL after deployment
-window.SERVER_URL = window.SERVER_URL || 'https://testrtcc-production.up.railway.app';
+// Server URL (if needed in the future)
+window.SERVER_URL = window.SERVER_URL || '';
 
-// For local development, use:
-// window.SERVER_URL = 'http://localhost:3000';
+// App configuration
+window.APP_CONFIG = {
+    name: '9w.visual Meeting',
+    version: '1.0.0'
+};
 
-console.log('📡 Server URL configured:', window.SERVER_URL);
+console.log('✅ Frontend configuration loaded');
