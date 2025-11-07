@@ -758,23 +758,52 @@ io.on('connection', (socket) => {
         return;
       }
 
+      // Create producer
       const producer = await peer.produce(transportId, kind, rtpParameters);
+      
+      console.log(`🎬 PRODUCER LIFECYCLE: created, producerId=${producer.id}, peerId=${socket.id}, kind=${kind}, timestamp=${Date.now()}`);
+      
+      // Store producer in room
       room.addProducer(producer.id, peer.id, producer);
 
-      socket.emit('producer-created', {
-        producerId: producer.id,
-        kind: producer.kind
+      // Handle producer events
+      producer.on('transportclose', () => {
+        console.log(`🔌 Transport closed for producer ${producer.id}`);
+        room.removeProducer(producer.id);
+        room.broadcast('producer-closed', {
+          producerId: producer.id,
+          socketId: socket.id
+        });
       });
 
-      // Notify other peers
-      room.broadcast('new-producer', {
-        producerId: producer.id,
-        socketId: socket.id,
-        kind: producer.kind,
-        userName: peer.metadata.name || 'User'
-      }, peer.id);
+      // ⭐ Wait a bit to ensure producer is fully established
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // ⭐ Double-check producer is still active before announcing
+      if (!producer.closed && !peer.disconnecting) {
+        // Emit to client first
+        socket.emit('producer-created', {
+          producerId: producer.id,
+          kind: producer.kind
+        });
+
+        // Notify other peers about new producer
+        console.log(`🎬 PRODUCER LIFECYCLE: announced, producerId=${producer.id}, peerId=${socket.id}, timestamp=${Date.now()}`);
+        
+        room.broadcast('new-producer', {
+          producerId: producer.id,
+          socketId: socket.id,
+          kind: producer.kind,
+          userName: peer.metadata.name || 'User'
+        }, peer.id);
+        
+        console.log(`📢 Announced producer ${producer.id} to room ${roomId}`);
+      } else {
+        console.warn(`⚠️ Producer ${producer.id} became invalid before announcement`);
+        socket.emit('error', { message: 'Producer creation failed' });
+      }
     } catch (error) {
-      console.error('Error in create-producer:', error);
+      console.error('❌ Produce error:', error);
       socket.emit('error', { message: error.message });
     }
   });
@@ -784,55 +813,116 @@ io.on('connection', (socket) => {
     try {
       const { roomId, producerId, rtpCapabilities } = data;
       
+      console.log(`🔍 Consume request: room=${roomId}, producer=${producerId}, peer=${socket.id}`);
+      
       const room = getRoom(roomId);
       if (!room) {
+        console.error(`❌ Room ${roomId} not found`);
         socket.emit('consumed', { error: 'Room not found', producerId });
         return;
       }
 
-      const peer = peersMap.get(socket.id);
-      if (!peer) {
-        console.error(`❌ Peer ${socket.id} not found in room ${roomId}`);
+      const consumerPeer = peersMap.get(socket.id);
+      if (!consumerPeer) {
+        console.error(`❌ Consumer peer ${socket.id} not found`);
         socket.emit('consumed', { error: 'Peer not found', producerId });
         return;
       }
 
       // Check if peer is disconnecting
-      if (peer.disconnecting) {
+      if (consumerPeer.disconnecting) {
         console.warn(`⚠️ Peer ${socket.id} is disconnecting, rejecting consume`);
         socket.emit('consumed', { error: 'Peer disconnecting', producerId });
         return;
       }
 
-      // Find the producer's peer
-      const producerPeer = Array.from(room.peers.values()).find(p => {
-        const producer = room.getProducer(producerId);
-        return producer && producer.peerId === p.id;
-      });
+      // ⭐ CRITICAL: Find and validate the producer exists
+      let producerPeer = null;
+      let producer = null;
+
+      // Search through all peers to find the producer
+      for (const [peerId, peer] of room.peers.entries()) {
+        // Check if this peer has the producer
+        for (const [pid, p] of peer.producers.entries()) {
+          if (pid === producerId) {
+            producerPeer = peer;
+            producer = p;
+            break;
+          }
+        }
+        if (producer) break;
+      }
+
+      // Also check room's producer map
+      if (!producer) {
+        const roomProducerData = room.producers.get(producerId);
+        if (roomProducerData) {
+          // Find the peer that owns this producer
+          for (const [peerId, peer] of room.peers.entries()) {
+            if (peer.id === roomProducerData.peerId) {
+              producerPeer = peer;
+              producer = roomProducerData.producer;
+              break;
+            }
+          }
+        }
+      }
+
+      // Validate producer exists and is active
+      if (!producer) {
+        console.error(`❌ Producer ${producerId} not found in any peer in room ${roomId}`);
+        socket.emit('consumed', { error: 'Producer not found', producerId });
+        return;
+      }
+
+      if (producer.closed) {
+        console.error(`❌ Producer ${producerId} is closed`);
+        socket.emit('consumed', { error: 'Producer closed', producerId });
+        return;
+      }
 
       if (!producerPeer) {
-        console.error(`❌ Producer ${producerId} not found in room ${roomId}`);
-        socket.emit('consumed', { error: 'Producer not found', producerId });
+        console.error(`❌ Producer peer not found for producer ${producerId}`);
+        socket.emit('consumed', { error: 'Producer peer not found', producerId });
         return;
       }
 
-      // Check if producer peer is still connected
       if (producerPeer.disconnecting) {
         console.warn(`⚠️ Producer peer ${producerPeer.id} is disconnecting`);
-        socket.emit('consumed', { error: 'Producer unavailable', producerId });
+        socket.emit('consumed', { error: 'Producer peer disconnecting', producerId });
         return;
       }
 
-      // Verify producer exists
-      const producer = room.getProducer(producerId);
-      if (!producer) {
-        console.error(`❌ Producer ${producerId} not found in room`);
-        socket.emit('consumed', { error: 'Producer not found', producerId });
+      console.log(`✅ Producer ${producerId} validated, creating consumer...`);
+
+      // Check if consumer already exists (duplicate request)
+      const existingConsumer = Array.from(consumerPeer.consumers.values())
+        .find(c => c.producerId === producerId);
+      
+      if (existingConsumer) {
+        console.warn(`⚠️ Consumer already exists for producer ${producerId}`);
+        socket.emit('consumed', {
+          id: existingConsumer.id,
+          producerId: existingConsumer.producerId,
+          kind: existingConsumer.kind,
+          rtpParameters: existingConsumer.rtpParameters
+        });
         return;
       }
 
+      // Get router and check if we can consume
       const router = room.getRouter();
-      const consumer = await peer.consume(router, producerId, rtpCapabilities);
+      
+      if (!router.canConsume({ producerId, rtpCapabilities })) {
+        console.error(`❌ Cannot consume producer ${producerId} - RTP capabilities mismatch`);
+        socket.emit('consumed', { error: 'Cannot consume - incompatible RTP capabilities', producerId });
+        return;
+      }
+
+      // Create consumer
+      const consumer = await consumerPeer.consume(router, producerId, rtpCapabilities);
+
+      console.log(`✅ Consumer ${consumer.id} created for producer ${producerId}`);
 
       socket.emit('consumed', {
         id: consumer.id,
@@ -842,7 +932,7 @@ io.on('connection', (socket) => {
       });
     } catch (error) {
       console.error('❌ Consume error:', error);
-      socket.emit('consumed', { error: error.message, producerId: data?.producerId });
+      socket.emit('consumed', { error: error.message || 'Consume failed', producerId: data?.producerId });
     }
   });
 
@@ -884,6 +974,26 @@ io.on('connection', (socket) => {
   // Disconnect handler
   socket.on('disconnect', async (reason) => {
     console.log(`🔌 Socket disconnected: ${socket.id}, reason: ${reason}`);
+    
+    const peer = peersMap.get(socket.id);
+    if (peer) {
+      const room = getRoom(peer.roomId);
+      if (room) {
+        // ⭐ Immediately notify all peers that this peer's producers are closing
+        for (const [producerId, producer] of peer.producers.entries()) {
+          if (!producer.closed) {
+            // Broadcast before closing
+            room.broadcast('producer-closed', {
+              producerId: producerId,
+              socketId: socket.id
+            });
+            
+            console.log(`📢 Announced closure of producer ${producerId} from peer ${peer.id}`);
+            console.log(`🎬 PRODUCER LIFECYCLE: closed, producerId=${producerId}, peerId=${peer.id}, timestamp=${Date.now()}`);
+          }
+        }
+      }
+    }
     
     // If it's a client-initiated disconnect (not a network issue), clean up immediately
     const isClientDisconnect = reason === 'client namespace disconnect' || reason === 'transport close';

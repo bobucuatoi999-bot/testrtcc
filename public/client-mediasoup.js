@@ -230,7 +230,52 @@ function setupSocketHandlers() {
     // Handle new producer (new user joined and started producing)
     socket.on('new-producer', async (data) => {
         console.log('👤 New producer:', data);
-        await consumeProducer(data.producerId, data.socketId, data.kind, data.userName);
+        console.log(`📺 CONSUMER LIFECYCLE: requested, producerId=${data.producerId}, timestamp=${Date.now()}`);
+        
+        try {
+            // ⭐ Wait a moment to ensure producer is fully ready on server
+            await new Promise(resolve => setTimeout(resolve, 200));
+            
+            // ⭐ Verify we have a recv transport before attempting consume
+            if (!recvTransport || recvTransport.closed) {
+                console.error('❌ No active recv transport, skipping consume');
+                return;
+            }
+
+            // ⭐ Check if we're already consuming this producer
+            const remoteUser = remoteConsumers.get(data.socketId);
+            if (remoteUser) {
+                if (data.kind === 'audio' && remoteUser.audioConsumer) {
+                    console.warn(`⚠️ Already consuming audio producer ${data.producerId}`);
+                    return;
+                }
+                if (data.kind === 'video' && remoteUser.videoConsumer) {
+                    console.warn(`⚠️ Already consuming video producer ${data.producerId}`);
+                    return;
+                }
+            }
+
+            // Attempt to consume
+            await consumeProducer(data.producerId, data.socketId, data.kind, data.userName);
+            
+        } catch (error) {
+            console.error(`❌ Error consuming producer ${data.producerId}:`, error);
+            
+            // ⭐ Don't retry if producer doesn't exist or is closed
+            if (error.message.includes('not found') || 
+                error.message.includes('closed') ||
+                error.message.includes('disconnecting') ||
+                error.message.includes('unavailable')) {
+                console.log('🛑 Producer no longer available, skipping');
+                return;
+            }
+            
+            // Retry for other errors after delay
+            console.log('🔄 Retrying consume in 2 seconds...');
+            setTimeout(() => {
+                consumeProducer(data.producerId, data.socketId, data.kind, data.userName);
+            }, 2000);
+        }
     });
 
     // Handle existing producers (when we join, get list of existing producers)
@@ -244,7 +289,41 @@ function setupSocketHandlers() {
     // Handle producer closed (user left or stopped producing)
     socket.on('producer-closed', (data) => {
         console.log('👋 Producer closed:', data);
-        removeRemoteUser(data.socketId);
+        console.log(`📺 CONSUMER LIFECYCLE: closed, producerId=${data.producerId}, socketId=${data.socketId}, timestamp=${Date.now()}`);
+        
+        // Remove consumer if exists
+        const remoteUser = remoteConsumers.get(data.socketId);
+        if (remoteUser) {
+            // Close the specific consumer based on producer
+            // We need to find which consumer matches this producer
+            // For now, remove the remote user entirely
+            if (remoteUser.audioConsumer) {
+                try {
+                    remoteUser.audioConsumer.close();
+                } catch (e) {
+                    console.warn('Error closing audio consumer:', e);
+                }
+            }
+            if (remoteUser.videoConsumer) {
+                try {
+                    remoteUser.videoConsumer.close();
+                } catch (e) {
+                    console.warn('Error closing video consumer:', e);
+                }
+            }
+            
+            // Remove video element if exists
+            if (remoteUser.videoWrapper) {
+                remoteUser.videoWrapper.remove();
+            }
+            
+            // Remove audio element if exists
+            if (remoteUser.audioElement) {
+                remoteUser.audioElement.remove();
+            }
+            
+            remoteConsumers.delete(data.socketId);
+        }
     });
 
     // Handle send transport created
