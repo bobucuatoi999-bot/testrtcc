@@ -1525,6 +1525,22 @@ function initializeMeeting() {
 // Make initializeMeeting available globally
 window.initializeMeeting = initializeMeeting;
 
+// Make all UI functions globally available for onclick handlers
+window.copyMeetingId = copyMeetingId;
+window.endCall = endCall;
+window.toggleMute = toggleMute;
+window.toggleCamera = toggleCamera;
+window.toggleScreenShare = toggleScreenShare;
+window.toggleChat = toggleChat;
+window.toggleParticipants = toggleParticipants;
+window.togglePasswordConfig = togglePasswordConfig;
+window.submitPassword = submitPassword;
+window.submitAdminPassword = submitAdminPassword;
+window.closePasswordModal = closePasswordModal;
+window.closeAdminPasswordModal = closeAdminPasswordModal;
+window.togglePasswordVisibility = togglePasswordVisibility;
+window.toggleAdminPasswordVisibility = toggleAdminPasswordVisibility;
+
 // Try to initialize immediately if DOM is ready, otherwise wait
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initializeMeeting);
