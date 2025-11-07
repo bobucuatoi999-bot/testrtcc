@@ -385,31 +385,33 @@ function setupSocketHandlers() {
                 iceTransportPolicy: 'all'
             });
 
-            // ✅ CRITICAL: Handle transport connect event - MUST wait for server confirmation
+            // ✅ CRITICAL: Handle transport connect event
+            // This event is automatically triggered by mediasoup when consume() is called
+            // if the transport is not yet connected
             recvTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
                 console.log('📥 Receive transport connect event triggered!');
                 console.log('📥 Transport ID:', recvTransport.id);
-                console.log('📥 DTLS Parameters:', dtlsParameters);
+                console.log('📥 Room ID:', currentRoomId);
+                console.log('📥 DTLS fingerprint:', dtlsParameters.fingerprints?.[0]?.value?.substring(0, 20) + '...');
                 
                 try {
-                    // Use emitWithAck to wait for server response, or use a promise-based approach
-                    // Note: mediasoup expects callback to be called, but we should try to get server confirmation
-                    
-                    // First, emit to server to connect the transport
+                    // ✅ CRITICAL: Emit to server to connect the transport
+                    // The server will call transport.connect({ dtlsParameters }) which establishes the DTLS connection
                     socket.emit('connect-transport', {
                         transportId: recvTransport.id,
                         dtlsParameters: dtlsParameters,
                         roomId: currentRoomId
                     });
                     
-                    // Wait a bit for server to process (mediasoup connect is async on server)
-                    // In practice, if server.connect() fails, the transport state will change to 'failed'
-                    // So we call callback immediately, and let connectionstatechange handle errors
-                    console.log('📥 Calling callback to signal transport connect...');
+                    console.log('📥 Emitted connect-transport to server, waiting for server to connect...');
+                    
+                    // ✅ IMPORTANT: In mediasoup, we must call callback() to allow the transport to proceed
+                    // The actual connection happens asynchronously on the server side
+                    // If the server fails to connect, the transport's connectionstatechange will fire with 'failed'
+                    // So we call callback() here, and monitor the connection state via connectionstatechange handler
                     callback();
                     
-                    // Note: The server should call transport.connect() which will establish the connection
-                    // If it fails, the connectionstatechange event will fire with 'failed' state
+                    console.log('📥 Callback called - transport connect initiated');
                     
                 } catch (error) {
                     console.error('❌ Error in receive transport connect handler:', error);
@@ -726,36 +728,54 @@ const MAX_CONSUME_RETRIES = 3;
 
 /**
  * Wait for transport to be connected
+ * Note: mediasoup transports use .on() not addEventListener()
  */
-function waitForTransportConnection(transport, timeout = 10000) {
+function waitForTransportConnection(transport, timeout = 15000) {
     return new Promise((resolve, reject) => {
+        // Already connected
         if (transport.connectionState === 'connected') {
+            console.log('✅ Transport already connected');
             resolve();
             return;
         }
         
+        // Transport is closed
         if (transport.closed) {
             reject(new Error('Transport is closed'));
             return;
         }
         
+        console.log(`⏳ Waiting for transport to connect (current state: ${transport.connectionState}, timeout: ${timeout}ms)...`);
+        
         const timer = setTimeout(() => {
             transport.off('connectionstatechange', handler);
-            reject(new Error('Transport connection timeout'));
+            console.error(`❌ Transport connection timeout after ${timeout}ms (final state: ${transport.connectionState})`);
+            reject(new Error(`Transport connection timeout (state: ${transport.connectionState})`));
         }, timeout);
         
-        const handler = () => {
-            if (transport.connectionState === 'connected') {
+        const handler = (state) => {
+            console.log(`🔄 Transport connection state changed: ${state}`);
+            
+            if (state === 'connected') {
                 clearTimeout(timer);
                 transport.off('connectionstatechange', handler);
+                console.log('✅ Transport connected successfully!');
                 resolve();
-            } else if (transport.connectionState === 'failed' || transport.connectionState === 'disconnected') {
+            } else if (state === 'failed') {
                 clearTimeout(timer);
                 transport.off('connectionstatechange', handler);
-                reject(new Error(`Transport connection ${transport.connectionState}`));
+                console.error('❌ Transport connection failed');
+                reject(new Error('Transport connection failed'));
+            } else if (state === 'closed') {
+                clearTimeout(timer);
+                transport.off('connectionstatechange', handler);
+                console.error('❌ Transport closed');
+                reject(new Error('Transport closed'));
             }
+            // 'connecting' and 'disconnected' states - just wait
         };
         
+        // ✅ Use .on() for mediasoup transports (not addEventListener)
         transport.on('connectionstatechange', handler);
         
         // Check immediately in case it connected between check and listener
