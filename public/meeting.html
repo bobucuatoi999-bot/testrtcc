@@ -373,26 +373,32 @@
                             console.log('✅ client-mediasoup.js loaded');
                             // Wait a bit to ensure all functions are defined
                             setTimeout(() => {
-                                // Trigger initialization if it hasn't happened yet
-                                if (typeof initializeMeeting === 'function') {
+                                // Try to call initializeMeeting from window
+                                const initFn = window.initializeMeeting || (typeof initializeMeeting !== 'undefined' ? initializeMeeting : null);
+                                if (typeof initFn === 'function') {
                                     console.log('🚀 Calling initializeMeeting...');
-                                    initializeMeeting();
+                                    initFn();
                                 } else {
-                                    console.warn('⚠️ initializeMeeting function not found, trying alternative...');
-                                    // Try alternative: check if DOMContentLoaded already fired
-                                    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                                        // Manually trigger initialization
-                                        const urlParams = new URLSearchParams(window.location.search);
-                                        const roomId = urlParams.get('room');
-                                        const name = urlParams.get('name');
-                                        const password = urlParams.get('password');
-                                        if (roomId && name && typeof joinRoom === 'function') {
+                                    console.warn('⚠️ initializeMeeting function not found, trying direct initialization...');
+                                    // Try alternative: manually trigger initialization
+                                    const urlParams = new URLSearchParams(window.location.search);
+                                    const roomId = urlParams.get('room');
+                                    const name = urlParams.get('name');
+                                    const password = urlParams.get('password');
+                                    
+                                    // Wait a bit more for functions to be defined
+                                    setTimeout(() => {
+                                        const joinFn = window.joinRoom || (typeof joinRoom !== 'undefined' ? joinRoom : null);
+                                        if (roomId && name && typeof joinFn === 'function') {
                                             console.log('🚀 Manually joining room...');
-                                            joinRoom(roomId, decodeURIComponent(name), password ? decodeURIComponent(password) : null);
+                                            joinFn(roomId, decodeURIComponent(name), password ? decodeURIComponent(password) : null);
+                                        } else {
+                                            console.error('❌ Cannot initialize: joinRoom function not found');
+                                            showStatus('Failed to initialize meeting. Please refresh the page.', 'error');
                                         }
-                                    }
+                                    }, 500);
                                 }
-                            }, 200);
+                            }, 300);
                         };
                         clientScript.onerror = () => {
                             console.error('❌ Failed to load client-mediasoup.js');

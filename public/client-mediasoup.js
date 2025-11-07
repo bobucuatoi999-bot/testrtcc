@@ -122,6 +122,20 @@ function initializeDOMElements() {
  */
 function initializeSocket() {
     try {
+        // Don't reinitialize if socket already exists and is connected/connecting
+        if (socket && (socket.connected || socket.connecting)) {
+            console.log('✅ Socket already initialized and connected/connecting');
+            return;
+        }
+        
+        // Close existing socket if it exists but not connected
+        if (socket && !socket.connected) {
+            console.log('🔄 Reinitializing socket...');
+            socket.disconnect();
+            socket = null;
+        }
+        
+        console.log('🔌 Initializing socket connection to:', SERVER_URL);
         socket = io(SERVER_URL, {
             transports: ['websocket', 'polling'],
             reconnection: true,
@@ -825,10 +839,6 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName) {
             consumeProducer(producerId, socketId, kind, remoteUserName);
         }, 3000);
     }
-
-    } catch (error) {
-        console.error(`❌ Error setting up consumer for producer ${producerId}:`, error);
-    }
 }
 
 /**
@@ -1244,6 +1254,8 @@ function updateScreenShareButton() {
  * Join a room
  */
 function joinRoom(roomId, name, password = null) {
+    // Make joinRoom available globally
+    window.joinRoom = joinRoom;
     console.log('🚪 Joining room:', { roomId, name, hasPassword: !!password });
     currentRoomId = roomId;
     userName = name;
@@ -1482,6 +1494,9 @@ function initializeMeeting() {
         window.location.href = 'index.html';
     }
 }
+
+// Make initializeMeeting available globally
+window.initializeMeeting = initializeMeeting;
 
 // Try to initialize immediately if DOM is ready, otherwise wait
 if (document.readyState === 'loading') {
