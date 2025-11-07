@@ -1185,26 +1185,50 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
                 createRemoteVideoElement(socketId, remoteUser, consumer.track);
             }
 
-            // ✅ CRITICAL: Resume consumer on server first, then locally
-            console.log(`▶️ Resuming consumer ${consumer.id} on server...`);
-            try {
-                // Resume on server first
-                socket.emit('consumer-resume', {
-                    consumerId: consumer.id,
-                    roomId: currentRoomId
-                });
-                
-                // Then resume locally
-                await consumer.resume();
-                console.log(`✅ Consumer resumed successfully (both server and client)`);
-            } catch (resumeError) {
-                console.error('❌ Error resuming consumer:', resumeError);
-                // Try to close and cleanup
-                try {
-                    consumer.close();
-                } catch (e) {}
-                throw new Error(`Failed to resume consumer: ${resumeError.message}`);
-            }
+                   // ✅ CRITICAL: Resume consumer on server first, then locally
+                   console.log(`▶️ Resuming consumer ${consumer.id} on server...`);
+                   try {
+                       // Resume on server first with callback
+                       await new Promise((resolve, reject) => {
+                           socket.emit('consumer-resume', {
+                               consumerId: consumer.id,
+                               roomId: currentRoomId
+                           }, (result) => {
+                               if (result && result.error) {
+                                   reject(new Error(result.error));
+                               } else {
+                                   resolve();
+                               }
+                           });
+                       });
+                       
+                       // Then resume locally
+                       await consumer.resume();
+                       console.log(`✅ Consumer resumed successfully (both server and client)`);
+                       console.log(`📺 CONSUMER LIFECYCLE: resumed, consumerId=${consumer.id}, timestamp=${Date.now()}`);
+                   } catch (resumeError) {
+                       console.error('❌ Error resuming consumer:', resumeError);
+                       // Try to close and cleanup
+                       try {
+                           consumer.close();
+                       } catch (e) {}
+                       throw new Error(`Failed to resume consumer: ${resumeError.message}`);
+                   }
+                   
+                   // Handle consumer events
+                   consumer.on('transportclose', () => {
+                       console.log(`🔌 Transport closed for consumer ${consumer.id}`);
+                       console.log(`📺 CONSUMER LIFECYCLE: transportclose, consumerId=${consumer.id}, timestamp=${Date.now()}`);
+                       // Consumer will be cleaned up
+                   });
+
+                   consumer.on('producerclose', () => {
+                       console.log(`🔌 Producer closed for consumer ${consumer.id}`);
+                       console.log(`📺 CONSUMER LIFECYCLE: producerclose, consumerId=${consumer.id}, timestamp=${Date.now()}`);
+                       // Consumer will be cleaned up by producer-closed handler
+                   });
+
+                   // Track ended is handled via track.addEventListener above
 
             console.log(`✅ Successfully consuming ${kind} from ${socketId} (producer: ${producerId}, consumer: ${consumer.id})`);
             
