@@ -889,6 +889,16 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
         if (recvTransport.closed) {
             throw new Error('Receive transport is closed');
         }
+        
+        // ✅ CRITICAL: Verify connect handler is attached BEFORE requesting consumer params
+        const hasConnectHandler = recvTransport.listenerCount && recvTransport.listenerCount('connect') > 0;
+        console.log(`🔍 Connect handler attached: ${hasConnectHandler}`);
+        console.log(`🔍 Transport ID: ${recvTransport.id}`);
+        
+        if (!hasConnectHandler) {
+            console.error('❌ CRITICAL: Connect handler not attached! Transport will not connect.');
+            throw new Error('Transport connect handler not attached. Transport not ready.');
+        }
 
         console.log(`🔄 Requesting to consume ${kind} from producer ${producerId} (user: ${remoteUserName || socketId})`);
         console.log(`🔍 Transport state: ${recvTransport.connectionState}, Device loaded: ${device.loaded}`);
