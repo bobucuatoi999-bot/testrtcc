@@ -967,6 +967,7 @@ async function consumeProducer(producerId, socketId, kind, remoteUserName, retry
                 kind: data.kind,
                 codecs: data.rtpParameters.codecs.map(c => c.mimeType).join(', ')
             });
+            console.log(`📺 CONSUMER LIFECYCLE: received, producerId=${data.producerId}, consumerId=${data.id}, timestamp=${Date.now()}`);
             
             // ✅ CRITICAL: Verify transport is not closed before consuming
             if (recvTransport.closed) {
