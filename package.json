@@ -4,8 +4,8 @@
   "description": "WebRTC signaling server for video and voice calls",
   "main": "server-mediasoup.js",
   "scripts": {
-    "start": "node server-mediasoup.js",
-    "dev": "nodemon server-mediasoup.js",
+    "start": "cd backend && node server.js",
+    "dev": "cd backend && node --watch server.js",
     "build:mediasoup": "node build-mediasoup-bundle.js",
     "cap:init": "npx cap init",
     "cap:add:android": "npx cap add android",
