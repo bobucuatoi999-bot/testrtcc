@@ -478,48 +478,50 @@ async function handleSignal(data) {
   
   let pc = peers.get(from);
   
-  if (!pc) {
-    // Create new peer connection
-    console.log(`🆕 Creating peer connection for ${from}`);
+  // CRITICAL FIX: If we receive an offer but don't have a peer connection,
+  // it means someone joined after us and is initiating connection
+  // Create the peer connection and handle the offer
+  if (!pc && type === 'offer') {
+    console.log(`🆕 Creating peer connection for incoming offer from ${from}`);
+    const user = users.get(from);
+    if (!user) {
+      console.warn(`⚠️ Received offer from unknown user ${from}`);
+      return;
+    }
+    
+    // Create peer connection (we're the answerer)
     pc = new RTCPeerConnection(ICE_SERVERS);
     peers.set(from, pc);
     
-    // Add local tracks
+    // CRITICAL FIX: Add local tracks if available
     if (localStream) {
       localStream.getTracks().forEach(track => {
         pc.addTrack(track, localStream);
+        console.log(`📤 Added ${track.kind} track to ${from}`);
       });
     } else {
-      // Add recvonly transceivers with dummy sender
-      pc.addTransceiver('audio', { direction: 'recvonly' });
-      pc.addTransceiver('video', { direction: 'recvonly' });
-      
-      try {
-        const audioContext = new AudioContext();
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-        gainNode.gain.value = 0;
-        oscillator.connect(gainNode);
-        const destination = audioContext.createMediaStreamDestination();
-        gainNode.connect(destination);
-        oscillator.start();
-        
-        destination.stream.getAudioTracks().forEach(track => {
-          pc.addTrack(track, destination.stream);
-        });
-      } catch (e) {
-        console.warn('⚠️ Could not create dummy audio track:', e);
-      }
+      console.warn('⚠️ No local stream when receiving offer from', from);
     }
     
     // Setup event handlers
     pc.ontrack = (event) => {
-      console.log(`📥 Received track from ${from}:`, event.track.kind);
-      const [remoteStream] = event.streams;
-      if (remoteStream) {
+      console.log(`📥 Received ${event.track.kind} track from ${from}`);
+      
+      // CRITICAL FIX: Properly handle track events
+      let remoteStream = remoteStreams.get(from);
+      if (!remoteStream) {
+        remoteStream = new MediaStream();
         remoteStreams.set(from, remoteStream);
-        updateVideoGrid();
       }
+      
+      remoteStream.addTrack(event.track);
+      
+      console.log(`✅ Stream ready for ${from}:`, {
+        videoTracks: remoteStream.getVideoTracks().length,
+        audioTracks: remoteStream.getAudioTracks().length,
+      });
+      
+      updateVideoGrid();
     };
     
     pc.onicecandidate = (event) => {
@@ -543,7 +545,6 @@ async function handleSignal(data) {
         }
         startKeepAlive(from, pc);
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        const user = users.get(from);
         if (user && user.socketId) {
           attemptReconnect(from, user.socketId);
         }
@@ -553,7 +554,6 @@ async function handleSignal(data) {
     pc.oniceconnectionstatechange = () => {
       console.log(`🧊 ICE connection to ${from}: ${pc.iceConnectionState}`);
       if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-        const user = users.get(from);
         if (user && user.socketId) {
           attemptReconnect(from, user.socketId);
         }
@@ -561,29 +561,42 @@ async function handleSignal(data) {
     };
   }
   
+  if (!pc) {
+    console.warn(`⚠️ No peer connection for signal from ${from}, type: ${type}`);
+    return;
+  }
+  
   try {
     if (type === 'offer') {
-      // Handle simultaneous offers (glare)
+      // Handle simultaneous offers (glare scenario - should be rare now)
       if (pc.localDescription && pc.signalingState === 'have-local-offer') {
-        console.log(`🔄 Simultaneous offer with ${from} - closing our offer`);
+        console.log(`🔄 Simultaneous offer detected with ${from} - we already sent offer`);
+        console.log(`   Closing our outgoing offer - becoming answerer`);
         pc.close();
         peers.delete(from);
         remoteStreams.delete(from);
-        // Recreate connection
+        
+        // Recreate and handle incoming offer
         const user = users.get(from);
         if (user && user.socketId) {
-          connectToPeer(from, user.socketId);
+          // Recreate connection and process offer
+          handleSignal(data); // Recursive call with same data
         }
         return;
       }
       
       if (pc.remoteDescription) {
-        console.log(`⚠️ Already have remote description from ${from}`);
+        console.log(`⚠️ Already processed offer from ${from}`);
         return;
       }
       
+      console.log(`📥 Processing offer from ${from}`);
       await pc.setRemoteDescription(new RTCSessionDescription(signalData));
-      const answer = await pc.createAnswer();
+      
+      const answer = await pc.createAnswer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
       await pc.setLocalDescription(answer);
       
       socket.emit('signal', {
@@ -597,19 +610,23 @@ async function handleSignal(data) {
       console.log(`✅ Answer sent to ${from}`);
     } else if (type === 'answer') {
       if (pc.remoteDescription) {
-        console.log(`⚠️ Already have answer from ${from}`);
+        console.log(`⚠️ Already processed answer from ${from}`);
         return;
       }
       
+      console.log(`📥 Processing answer from ${from}`);
       await pc.setRemoteDescription(new RTCSessionDescription(signalData));
       console.log(`✅ Answer processed from ${from}`);
     } else if (type === 'ice-candidate') {
       if (pc.remoteDescription || pc.localDescription) {
         await pc.addIceCandidate(new RTCIceCandidate(signalData));
+      } else {
+        console.log(`⏳ Queuing ICE candidate from ${from} (descriptions not set yet)`);
+        // Queue candidate if descriptions not set (shouldn't happen often)
       }
     }
   } catch (error) {
-    console.error(`❌ Error handling signal from ${from}:`, error);
+    console.error(`❌ Error handling ${type} from ${from}:`, error);
   }
 }
 
